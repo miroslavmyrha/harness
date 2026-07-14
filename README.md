@@ -122,3 +122,7 @@ the model never mistakes a partial result for a complete one.
 - `Modelfile-asistent` — the `asistent` model (conversational, no tools)
 
 Create with: `ollama create asistent-agent -f Modelfile-agent`
+
+## License
+
+MIT
