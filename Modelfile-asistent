@@ -1,0 +1,29 @@
+FROM hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M
+
+# --- Parametry vyladene pro Intel N100 (4 jadra, CPU-only) ---
+PARAMETER num_thread 4
+PARAMETER num_ctx 4096
+PARAMETER temperature 0.7
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.1
+PARAMETER stop "<end_of_turn>"
+
+# --- Jednoduchy Gemma chat template (bez tool-calling parseru) ---
+TEMPLATE """{{- if .System }}<start_of_turn>user
+{{ .System }}
+
+{{ end }}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<start_of_turn>user
+{{ .Content }}<end_of_turn>
+<start_of_turn>model
+{{ else if eq .Role "assistant" }}{{ .Content }}<end_of_turn>
+{{ end }}
+{{- end }}"""
+
+# --- Chovani asistenta ---
+SYSTEM """Jsi praktický český asistent běžící lokálně na úsporném počítači.
+Odpovídáš výhradně česky, stručně a věcně, bez zbytečné omáčky.
+Když něco nevíš, řekneš to na rovinu místo vymýšlení.
+U technických dotazů dáváš konkrétní kroky a příkazy, ne obecné rady.
+Pokud je odpověď delší, používáš odrážky nebo krátké odstavce."""
