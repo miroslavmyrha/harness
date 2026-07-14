@@ -42,7 +42,7 @@ interrupts the current turn, not the whole program.
 Example with a remote machine:
 
 ```
-AGENT_OLLAMA=http://192.168.1.50:11434 AGENT_MODEL=gemma4-27b python3 agent.py
+AGENT_OLLAMA=http://192.168.1.50:11434 AGENT_MODEL=gemma4:31b python3 agent.py
 ```
 
 ## Tools
