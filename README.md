@@ -1,55 +1,74 @@
 # harness
 
-Minimální agent harness nad ollama (~300 řádků Pythonu, bez závislostí mimo stdlib).
-Drží konverzační smyčku, dispatchuje tool-cally a vynucuje bezpečnostní pravidla;
-model jen generuje text a požadavky na nástroje.
+A minimal agent harness for ollama models (~300 lines of Python, stdlib only).
+It owns the conversation loop, dispatches tool calls, and enforces safety
+rules; the model itself only generates text and tool-call requests.
 
-## Použití
+## Intent
+
+This is a deliberately small, readable harness for driving local (and later
+remote) open-weight models as agents — reading, writing, and editing files,
+running shell commands, and fetching web pages. It exists to:
+
+- serve as a testbed for how much agentic work small local models (12B class)
+  can do when the harness gives them tight guardrails and good error messages,
+- stay simple enough to understand and modify in one sitting — every safety
+  rule is a few visible lines, not a framework,
+- be ready to point at bigger models on a remote inference box
+  (`AGENT_OLLAMA`) without code changes, as a building block for a larger
+  agentic codegen pipeline.
+
+Non-goals: multi-agent orchestration, context summarization, sandboxing
+beyond the write jail. When those are needed, use a full-size harness.
+
+## Usage
 
 ```
-python3 agent.py          # ptá se před bash/zápisem [y/N]
-python3 agent.py --yolo   # spouští vše bez ptaní (kromě nebezpečných příkazů)
+python3 agent.py          # asks before bash/file writes [y/N]
+python3 agent.py --yolo   # runs everything without asking (except dangerous commands)
 ```
 
-Konec: `exit`, `quit`, `konec`, `/bye` nebo Ctrl+D. Ctrl+C během generování
-přeruší aktuální tah, ne celý program.
+Quit with `exit`, `quit`, `konec`, `/bye` or Ctrl+D. Ctrl+C during generation
+interrupts the current turn, not the whole program.
 
-## Konfigurace (env)
+## Configuration (env)
 
-| Proměnná       | Význam                              | Výchozí                  |
-|----------------|-------------------------------------|--------------------------|
-| `AGENT_MODEL`  | název modelu v ollama               | `asistent-agent`         |
-| `AGENT_OLLAMA` | základ URL ollamy                   | `http://localhost:11434` |
-| `AGENT_ROOT`   | složka, mimo kterou je zákaz zápisu | `$HOME`                  |
+| Variable       | Meaning                                  | Default                  |
+|----------------|------------------------------------------|--------------------------|
+| `AGENT_MODEL`  | model name in ollama                     | `asistent-agent`         |
+| `AGENT_OLLAMA` | ollama base URL                          | `http://localhost:11434` |
+| `AGENT_ROOT`   | directory outside which writes are denied| `$HOME`                  |
 
-Příklad se vzdáleným strojem:
+Example with a remote machine:
 
 ```
 AGENT_OLLAMA=http://192.168.1.50:11434 AGENT_MODEL=gemma4-27b python3 agent.py
 ```
 
-## Nástroje
+## Tools
 
-- `run_bash` — shell příkaz, timeout 120 s, výstup ořezán na 4000 znaků
-- `read_file` — čtení po ~6000 znacích, pokračování přes `from_line`, strop 5 MB
-- `write_file` — zápis celého souboru (nové soubory / úplný přepis)
-- `edit_file` — přesná náhrada řetězce (`old_string` musí být jednoznačný), volitelně `replace_all`
-- `list_dir` — výpis složky
-- `web_fetch` — stažení stránky, extrakce titulků odkazů + očištěný text (bez JS)
+- `run_bash` — shell command, 120 s timeout, output truncated to 4000 chars
+- `read_file` — reads ~6000 chars at a time, continue via `from_line`, 5 MB cap
+- `write_file` — writes a whole file (new files / full rewrite)
+- `edit_file` — exact string replacement (`old_string` must be unique), optional `replace_all`
+- `list_dir` — directory listing
+- `web_fetch` — fetches a page, extracts link titles + cleaned text (no JS)
 
-## Bezpečnostní pojistky
+## Safety rails
 
-- zápis (`write_file`, `edit_file`) jen uvnitř `AGENT_ROOT`, symlinky se rozbalují přes `realpath`
-- nebezpečné příkazy (`sudo`, `rm -rf`, `dd`, `mkfs`, zápis do `/dev/`, …) chtějí
-  potvrzení **i v `--yolo` režimu**
-- strop 25 tool-callů na jeden uživatelský vstup
-- pozor: `run_bash` je z principu neomezený (kromě potvrzování) — jail na zápisy
-  chrání proti *omylům* modelu, ne proti běhu bez dozoru; pro ostrý autonomní
-  provoz spouštěj pod odděleným uživatelem nebo v kontejneru
+- writes (`write_file`, `edit_file`) only inside `AGENT_ROOT`; symlinks are
+  resolved via `realpath`
+- dangerous commands (`sudo`, `rm -rf`, `dd`, `mkfs`, writes to `/dev/`, …)
+  require confirmation **even in `--yolo` mode**
+- cap of 25 tool calls per user input
+- caveat: `run_bash` is inherently unrestricted (apart from confirmation) —
+  the write jail protects against the model's *mistakes*, not against
+  unsupervised runs; for real autonomous use run it under a separate user or
+  in a container
 
-## Modelfily
+## Modelfiles
 
-- `Modelfile-agent` — model `asistent-agent` (výchozí pro agenta)
-- `Modelfile-asistent` — model `asistent` (konverzační, bez nástrojů)
+- `Modelfile-agent` — the `asistent-agent` model (default for the agent)
+- `Modelfile-asistent` — the `asistent` model (conversational, no tools)
 
-Vytvoření: `ollama create asistent-agent -f Modelfile-agent`
+Create with: `ollama create asistent-agent -f Modelfile-agent`

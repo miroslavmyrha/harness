@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Minimalni lokalni agent nad ollama (model asistent-agent) s tool-callingem.
-Pouziti:  python3 ~/agent.py          (ptá se pred bash/zapisem)
-          python3 ~/agent.py --yolo   (spousti vse bez ptani)
-Env:      AGENT_MODEL  - nazev modelu (vychozi asistent-agent)
-          AGENT_OLLAMA - zaklad URL ollamy (vychozi http://localhost:11434)
-          AGENT_ROOT   - slozka, mimo kterou agent nesmi zapisovat (vychozi $HOME)
+"""Minimal local agent harness for ollama models with tool calling.
+Usage:    python3 agent.py          (asks before bash/file writes)
+          python3 agent.py --yolo   (runs everything without asking)
+Env:      AGENT_MODEL  - model name (default asistent-agent)
+          AGENT_OLLAMA - ollama base URL (default http://localhost:11434)
+          AGENT_ROOT   - directory the agent may write into (default $HOME)
 """
 import json, os, sys, subprocess, urllib.request, gzip, zlib, re, html
 
@@ -12,60 +12,62 @@ OLLAMA = os.environ.get("AGENT_OLLAMA", "http://localhost:11434") + "/api/chat"
 MODEL = os.environ.get("AGENT_MODEL", "asistent-agent")
 ROOT = os.path.realpath(os.environ.get("AGENT_ROOT", os.path.expanduser("~")))
 YOLO = "--yolo" in sys.argv
-MAX_STEPS = 25  # strop volani nastroju na jeden tah
-# prikazy, ktere chteji potvrzeni i v YOLO rezimu
+MAX_STEPS = 25  # cap on tool calls per user turn
+# commands that require confirmation even in YOLO mode
 DANGEROUS = re.compile(r"\bsudo\b|\brm\s+-\w*[rf]|\bmkfs|\bdd\b|>\s*/dev/"
                        r"|\bshutdown\b|\breboot\b|\bchmod\s+-R|\bchown\s+-R")
 
-# barvy
+# colors
 C = dict(reset="\033[0m", dim="\033[2m", cyan="\033[36m",
          yellow="\033[33m", green="\033[32m", red="\033[31m", bold="\033[1m")
 
-SYSTEM = ("Jsi strucny agent na lokalnim pocitaci. Mas nastroje run_bash, "
-          "read_file, write_file, edit_file, list_dir, web_fetch. Kdyz je potreba, "
-          "zavolej nastroj; jinak odpovez cesky. Pracuj po malych krocich. "
-          "Existujici soubory upravuj pres edit_file (presna nahrada retezce), "
-          "write_file pouzivej jen na nove soubory nebo uplny prepis.")
+SYSTEM = ("You are a concise agent on a local computer. You have the tools "
+          "run_bash, read_file, write_file, edit_file, list_dir, web_fetch. "
+          "Call a tool when needed; otherwise answer in the user's language. "
+          "Work in small steps. Modify existing files with edit_file (exact "
+          "string replacement); use write_file only for new files or a full "
+          "rewrite.")
 
 TOOLS = [
     {"type": "function", "function": {"name": "run_bash",
-        "description": "Spusti shell prikaz a vrati jeho vystup.",
+        "description": "Run a shell command and return its output.",
         "parameters": {"type": "object", "properties": {
-            "command": {"type": "string", "description": "prikaz k spusteni"}},
+            "command": {"type": "string", "description": "command to run"}},
             "required": ["command"]}}},
     {"type": "function", "function": {"name": "read_file",
-        "description": "Precte obsah souboru (max ~6000 znaku najednou; u delsich "
-                       "souboru pokracuj parametrem from_line).",
+        "description": "Read file contents (max ~6000 chars at a time; for "
+                       "longer files continue with the from_line parameter).",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
-            "from_line": {"type": "integer", "description": "cist od tohoto radku (vychozi 1)"}},
+            "from_line": {"type": "integer", "description": "start reading at this line (default 1)"}},
             "required": ["path"]}}},
     {"type": "function", "function": {"name": "write_file",
-        "description": "Zapise (prepise) cely obsah souboru. Pro upravy "
-                       "existujicich souboru pouzij radeji edit_file.",
+        "description": "Write (overwrite) the full contents of a file. To "
+                       "modify an existing file prefer edit_file.",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"}, "content": {"type": "string"}},
             "required": ["path", "content"]}}},
     {"type": "function", "function": {"name": "edit_file",
-        "description": "Upravi soubor nahradou presneho retezce. old_string musi "
-                       "v souboru existovat presne (vcetne odsazeni a novych radku) "
-                       "a byt jednoznacny, jinak pridej vic okolniho kontextu.",
+        "description": "Edit a file by exact string replacement. old_string "
+                       "must exist in the file exactly (including indentation "
+                       "and newlines) and be unique; otherwise add more "
+                       "surrounding context.",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
-            "old_string": {"type": "string", "description": "presny text k nahrazeni"},
-            "new_string": {"type": "string", "description": "novy text"},
-            "replace_all": {"type": "boolean", "description": "nahradit vsechny vyskyty (vychozi false)"}},
+            "old_string": {"type": "string", "description": "exact text to replace"},
+            "new_string": {"type": "string", "description": "new text"},
+            "replace_all": {"type": "boolean", "description": "replace every occurrence (default false)"}},
             "required": ["path", "old_string", "new_string"]}}},
     {"type": "function", "function": {"name": "list_dir",
-        "description": "Vypise obsah slozky.",
+        "description": "List directory contents.",
         "parameters": {"type": "object", "properties": {
-            "path": {"type": "string", "description": "vychozi '.'"}},
+            "path": {"type": "string", "description": "default '.'"}},
             "required": []}}},
     {"type": "function", "function": {"name": "web_fetch",
-        "description": "Stahne webovou stranku a vrati titulky odkazu + ocisteny text. "
-                       "Pozn.: nefunguje na strankach vykreslovanych JavaScriptem.",
+        "description": "Fetch a web page and return link titles + cleaned "
+                       "text. Note: does not work on JavaScript-rendered pages.",
         "parameters": {"type": "object", "properties": {
-            "url": {"type": "string", "description": "adresa stranky"}},
+            "url": {"type": "string", "description": "page address"}},
             "required": ["url"]}}},
 ]
 
@@ -74,14 +76,14 @@ def confirm(action, force=False):
     if YOLO and not force:
         return True
     try:
-        ans = input(f"{C['yellow']}  povolit {action}? [y/N] {C['reset']}").strip().lower()
+        ans = input(f"{C['yellow']}  allow {action}? [y/N] {C['reset']}").strip().lower()
     except EOFError:
         return False
     return ans in ("y", "yes", "a", "ano")
 
 
 def safe_path(path):
-    """Vrati realnou cestu uvnitr ROOT, jinak None (zakaz zapisu mimo ROOT)."""
+    """Return the real path if it lies inside ROOT, else None (no writes outside ROOT)."""
     rp = os.path.realpath(path)
     return rp if rp == ROOT or rp.startswith(ROOT + os.sep) else None
 
@@ -89,16 +91,16 @@ def safe_path(path):
 def tool_run_bash(args):
     cmd = args.get("command", "")
     print(f"{C['dim']}  $ {cmd}{C['reset']}")
-    if not confirm(f"prikaz: {cmd}", force=bool(DANGEROUS.search(cmd))):
-        return "ODMITNUTO uzivatelem."
+    if not confirm(f"command: {cmd}", force=bool(DANGEROUS.search(cmd))):
+        return "DENIED by user."
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip()
-        return out[:4000] if out else f"(bez vystupu, navratovy kod {r.returncode})"
+        return out[:4000] if out else f"(no output, exit code {r.returncode})"
     except subprocess.TimeoutExpired:
-        return "CHYBA: prikaz prekrocil 120s timeout."
+        return "ERROR: command exceeded the 120s timeout."
     except Exception as e:
-        return f"CHYBA: {e}"
+        return f"ERROR: {e}"
 
 
 def tool_read_file(args):
@@ -108,37 +110,37 @@ def tool_read_file(args):
         start = 1
     try:
         if os.path.getsize(args["path"]) > 5_000_000:
-            return "CHYBA: soubor je vetsi nez 5 MB, cti ho po castech pres run_bash."
+            return "ERROR: file is larger than 5 MB, read it in pieces via run_bash."
         with open(args["path"], "r", errors="replace") as f:
             lines = f.readlines()
     except Exception as e:
-        return f"CHYBA: {e}"
+        return f"ERROR: {e}"
     if start > len(lines):
-        return f"CHYBA: soubor ma jen {len(lines)} radku."
+        return f"ERROR: the file only has {len(lines)} lines."
     out, size = [], 0
     for i, line in enumerate(lines[start - 1:], start):
         if size + len(line) > 6000 and out:
-            out.append(f"\n[zkraceno - soubor ma {len(lines)} radku, "
-                       f"pokracuj s from_line={i}]")
+            out.append(f"\n[truncated - the file has {len(lines)} lines, "
+                       f"continue with from_line={i}]")
             break
         out.append(line)
         size += len(line)
-    return "".join(out) or "(prazdny soubor)"
+    return "".join(out) or "(empty file)"
 
 
 def tool_write_file(args):
     path, content = args.get("path", ""), args.get("content", "")
     if not safe_path(path):
-        return f"CHYBA: zapis mimo {ROOT} je zakazan."
-    print(f"{C['dim']}  zapis -> {path} ({len(content)} znaku){C['reset']}")
-    if not confirm(f"zapis do {path}"):
-        return "ODMITNUTO uzivatelem."
+        return f"ERROR: writing outside {ROOT} is forbidden."
+    print(f"{C['dim']}  write -> {path} ({len(content)} chars){C['reset']}")
+    if not confirm(f"write to {path}"):
+        return "DENIED by user."
     try:
         with open(path, "w") as f:
             f.write(content)
-        return f"OK, zapsano {len(content)} znaku do {path}."
+        return f"OK, wrote {len(content)} chars to {path}."
     except Exception as e:
-        return f"CHYBA: {e}"
+        return f"ERROR: {e}"
 
 
 def tool_edit_file(args):
@@ -146,50 +148,50 @@ def tool_edit_file(args):
     old, new = args.get("old_string", ""), args.get("new_string", "")
     replace_all = bool(args.get("replace_all", False))
     if not safe_path(path):
-        return f"CHYBA: zapis mimo {ROOT} je zakazan."
+        return f"ERROR: writing outside {ROOT} is forbidden."
     if not old:
-        return "CHYBA: old_string nesmi byt prazdny."
+        return "ERROR: old_string must not be empty."
     if old == new:
-        return "CHYBA: old_string a new_string jsou stejne."
+        return "ERROR: old_string and new_string are identical."
     try:
         with open(path, "r", errors="replace") as f:
             text = f.read()
     except Exception as e:
-        return f"CHYBA: {e}"
+        return f"ERROR: {e}"
     n = text.count(old)
     if n == 0:
-        return ("CHYBA: old_string v souboru nenalezen - musi sedet presne "
-                "vcetne odsazeni a novych radku.")
+        return ("ERROR: old_string not found in the file - it must match "
+                "exactly, including indentation and newlines.")
     if n > 1 and not replace_all:
-        return (f"CHYBA: old_string nalezen {n}x, musi byt jednoznacny - "
-                "pridej vic okolniho kontextu, nebo pouzij replace_all=true.")
+        return (f"ERROR: old_string found {n}x, it must be unique - add more "
+                "surrounding context, or use replace_all=true.")
     count = n if replace_all else 1
-    print(f"{C['dim']}  edit -> {path} ({count}x nahrada, "
-          f"-{len(old)}/+{len(new)} znaku){C['reset']}")
-    if not confirm(f"editace {path}"):
-        return "ODMITNUTO uzivatelem."
+    print(f"{C['dim']}  edit -> {path} ({count}x replacement, "
+          f"-{len(old)}/+{len(new)} chars){C['reset']}")
+    if not confirm(f"edit of {path}"):
+        return "DENIED by user."
     try:
         with open(path, "w") as f:
             f.write(text.replace(old, new, count))
     except Exception as e:
-        return f"CHYBA: {e}"
-    return f"OK, nahrazeno {count}x v {path}."
+        return f"ERROR: {e}"
+    return f"OK, replaced {count}x in {path}."
 
 
 def tool_list_dir(args):
     path = args.get("path") or "."
     try:
         items = sorted(os.listdir(path))
-        return "\n".join(items)[:4000] or "(prazdna slozka)"
+        return "\n".join(items)[:4000] or "(empty directory)"
     except Exception as e:
-        return f"CHYBA: {e}"
+        return f"ERROR: {e}"
 
 
 def tool_web_fetch(args):
     url = args.get("url", "")
     if not url.startswith("http"):
         url = "https://" + url
-    print(f"{C['dim']}  stahuji {url}{C['reset']}")
+    print(f"{C['dim']}  fetching {url}{C['reset']}")
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
@@ -205,21 +207,21 @@ def tool_web_fetch(args):
                 raw = zlib.decompress(raw, -zlib.MAX_WBITS)
         h = raw.decode("utf-8", errors="replace")
     except Exception as e:
-        return f"CHYBA: {e}"
-    # titulky z odkazu
+        return f"ERROR: {e}"
+    # link titles
     seen, titles = set(), []
     for l in re.findall(r"<a[^>]*>(.*?)</a>", h, re.S):
         t = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", l))).strip()
         if 25 < len(t) < 140 and t not in seen:
             seen.add(t); titles.append(t)
-    # ocisteny text jako fallback
+    # cleaned text as fallback
     body = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", h, flags=re.S)
     body = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", body))).strip()
     out = ""
     if titles:
-        out += "TITULKY/ODKAZY:\n" + "\n".join("- " + t for t in titles[:40]) + "\n\n"
+        out += "TITLES/LINKS:\n" + "\n".join("- " + t for t in titles[:40]) + "\n\n"
     out += "TEXT:\n" + body[:4000]
-    return out[:6000] if out.strip() else "(stranka bez ctitelneho obsahu - asi JavaScript)"
+    return out[:6000] if out.strip() else "(page has no readable content - probably JavaScript)"
 
 
 DISPATCH = {"run_bash": tool_run_bash, "read_file": tool_read_file,
@@ -228,13 +230,13 @@ DISPATCH = {"run_bash": tool_run_bash, "read_file": tool_read_file,
 
 
 def chat(messages):
-    """Streamuje odpoved z ollama; tokeny vypisuje zive a vrati cely message."""
+    """Streams a response from ollama; prints tokens live and returns the full message."""
     payload = {"model": MODEL, "messages": messages, "tools": TOOLS,
                "think": False, "stream": True}
     req = urllib.request.Request(OLLAMA, data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     parts, tool_calls, prefixed = [], [], False
-    sys.stdout.write(f"{C['dim']}  (generuji...){C['reset']}")
+    sys.stdout.write(f"{C['dim']}  (generating...){C['reset']}")
     sys.stdout.flush()
     with urllib.request.urlopen(req, timeout=600) as resp:
         for raw in resp:
@@ -255,7 +257,7 @@ def chat(messages):
                 tool_calls.extend(m["tool_calls"])
             if chunk.get("done"):
                 break
-    sys.stdout.write("\r" + " " * 16 + "\r")  # smaz "(generuji...)" kdyz nebyl text
+    sys.stdout.write("\r" + " " * 16 + "\r")  # erase "(generating...)" if there was no text
     if prefixed:
         print()
     msg = {"role": "assistant", "content": "".join(parts)}
@@ -265,14 +267,14 @@ def chat(messages):
 
 
 def main():
-    print(f"{C['bold']}{C['cyan']}Lokalni agent ({MODEL}){C['reset']} "
-          f"{'[YOLO]' if YOLO else '[potvrzovani]'} - 'exit' pro konec.\n")
+    print(f"{C['bold']}{C['cyan']}Local agent ({MODEL}){C['reset']} "
+          f"{'[YOLO]' if YOLO else '[confirming]'} - 'exit' to quit.\n")
     messages = [{"role": "system", "content": SYSTEM}]
     while True:
         try:
-            user = input(f"{C['bold']}{C['green']}ty> {C['reset']}").strip()
+            user = input(f"{C['bold']}{C['green']}you> {C['reset']}").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nNashledanou.")
+            print("\nBye.")
             break
         if user.lower() in ("exit", "quit", "konec", "/bye"):
             break
@@ -284,12 +286,12 @@ def main():
             try:
                 msg = chat(messages)
             except KeyboardInterrupt:
-                print(f"\n{C['red']}Preruseno.{C['reset']}")
+                print(f"\n{C['red']}Interrupted.{C['reset']}")
                 messages.append({"role": "assistant",
-                                 "content": "(preruseno uzivatelem)"})
+                                 "content": "(interrupted by user)"})
                 break
             except Exception as e:
-                print(f"{C['red']}Chyba spojeni s ollama: {e}{C['reset']}")
+                print(f"{C['red']}Error talking to ollama: {e}{C['reset']}")
                 break
             messages.append(msg)
             calls = msg.get("tool_calls") or []
@@ -304,7 +306,7 @@ def main():
                     except Exception:
                         args = {}
                 print(f"{C['yellow']}  -> {fn}({json.dumps(args, ensure_ascii=False)}){C['reset']}")
-                result = DISPATCH.get(fn, lambda a: f"neznamy nastroj {fn}")(args)
+                result = DISPATCH.get(fn, lambda a: f"unknown tool {fn}")(args)
                 messages.append({"role": "tool", "tool_name": fn, "content": str(result)})
         print()
 
