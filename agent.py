@@ -4,13 +4,18 @@ Pouziti:  python3 ~/agent.py          (ptá se pred bash/zapisem)
           python3 ~/agent.py --yolo   (spousti vse bez ptani)
 Env:      AGENT_MODEL  - nazev modelu (vychozi asistent-agent)
           AGENT_OLLAMA - zaklad URL ollamy (vychozi http://localhost:11434)
+          AGENT_ROOT   - slozka, mimo kterou agent nesmi zapisovat (vychozi $HOME)
 """
 import json, os, sys, subprocess, urllib.request, gzip, zlib, re, html
 
 OLLAMA = os.environ.get("AGENT_OLLAMA", "http://localhost:11434") + "/api/chat"
 MODEL = os.environ.get("AGENT_MODEL", "asistent-agent")
+ROOT = os.path.realpath(os.environ.get("AGENT_ROOT", os.path.expanduser("~")))
 YOLO = "--yolo" in sys.argv
 MAX_STEPS = 25  # strop volani nastroju na jeden tah
+# prikazy, ktere chteji potvrzeni i v YOLO rezimu
+DANGEROUS = re.compile(r"\bsudo\b|\brm\s+-\w*[rf]|\bmkfs|\bdd\b|>\s*/dev/"
+                       r"|\bshutdown\b|\breboot\b|\bchmod\s+-R|\bchown\s+-R")
 
 # barvy
 C = dict(reset="\033[0m", dim="\033[2m", cyan="\033[36m",
@@ -65,17 +70,26 @@ TOOLS = [
 ]
 
 
-def confirm(action):
-    if YOLO:
+def confirm(action, force=False):
+    if YOLO and not force:
         return True
-    ans = input(f"{C['yellow']}  povolit {action}? [y/N] {C['reset']}").strip().lower()
+    try:
+        ans = input(f"{C['yellow']}  povolit {action}? [y/N] {C['reset']}").strip().lower()
+    except EOFError:
+        return False
     return ans in ("y", "yes", "a", "ano")
+
+
+def safe_path(path):
+    """Vrati realnou cestu uvnitr ROOT, jinak None (zakaz zapisu mimo ROOT)."""
+    rp = os.path.realpath(path)
+    return rp if rp == ROOT or rp.startswith(ROOT + os.sep) else None
 
 
 def tool_run_bash(args):
     cmd = args.get("command", "")
     print(f"{C['dim']}  $ {cmd}{C['reset']}")
-    if not confirm(f"prikaz: {cmd}"):
+    if not confirm(f"prikaz: {cmd}", force=bool(DANGEROUS.search(cmd))):
         return "ODMITNUTO uzivatelem."
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
@@ -93,6 +107,8 @@ def tool_read_file(args):
     except (TypeError, ValueError):
         start = 1
     try:
+        if os.path.getsize(args["path"]) > 5_000_000:
+            return "CHYBA: soubor je vetsi nez 5 MB, cti ho po castech pres run_bash."
         with open(args["path"], "r", errors="replace") as f:
             lines = f.readlines()
     except Exception as e:
@@ -112,6 +128,8 @@ def tool_read_file(args):
 
 def tool_write_file(args):
     path, content = args.get("path", ""), args.get("content", "")
+    if not safe_path(path):
+        return f"CHYBA: zapis mimo {ROOT} je zakazan."
     print(f"{C['dim']}  zapis -> {path} ({len(content)} znaku){C['reset']}")
     if not confirm(f"zapis do {path}"):
         return "ODMITNUTO uzivatelem."
@@ -127,6 +145,8 @@ def tool_edit_file(args):
     path = args.get("path", "")
     old, new = args.get("old_string", ""), args.get("new_string", "")
     replace_all = bool(args.get("replace_all", False))
+    if not safe_path(path):
+        return f"CHYBA: zapis mimo {ROOT} je zakazan."
     if not old:
         return "CHYBA: old_string nesmi byt prazdny."
     if old == new:
@@ -263,6 +283,11 @@ def main():
         for _ in range(MAX_STEPS):
             try:
                 msg = chat(messages)
+            except KeyboardInterrupt:
+                print(f"\n{C['red']}Preruseno.{C['reset']}")
+                messages.append({"role": "assistant",
+                                 "content": "(preruseno uzivatelem)"})
+                break
             except Exception as e:
                 print(f"{C['red']}Chyba spojeni s ollama: {e}{C['reset']}")
                 break
