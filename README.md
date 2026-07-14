@@ -51,6 +51,8 @@ AGENT_OLLAMA=http://192.168.1.50:11434 AGENT_MODEL=gemma4-27b python3 agent.py
 - `read_file` — reads ~6000 chars at a time, continue via `from_line`, 5 MB cap
 - `write_file` — writes a whole file (new files / full rewrite)
 - `edit_file` — exact string replacement (`old_string` must be unique), optional `replace_all`
+- `grep` — recursive regex search (`file:line: text`), optional `glob` filter,
+  skips hidden dirs / `node_modules` / binaries, capped at 100 matches
 - `list_dir` — directory listing
 - `web_fetch` — fetches a page, extracts link titles + cleaned text (no JS)
 

@@ -6,7 +6,7 @@ Env:      AGENT_MODEL  - model name (default asistent-agent)
           AGENT_OLLAMA - ollama base URL (default http://localhost:11434)
           AGENT_ROOT   - directory the agent may write into (default $HOME)
 """
-import json, os, sys, subprocess, urllib.request, gzip, zlib, re, html
+import json, os, sys, subprocess, urllib.request, gzip, zlib, re, html, fnmatch
 
 OLLAMA = os.environ.get("AGENT_OLLAMA", "http://localhost:11434") + "/api/chat"
 MODEL = os.environ.get("AGENT_MODEL", "asistent-agent")
@@ -22,7 +22,7 @@ C = dict(reset="\033[0m", dim="\033[2m", cyan="\033[36m",
          yellow="\033[33m", green="\033[32m", red="\033[31m", bold="\033[1m")
 
 SYSTEM = ("You are a concise agent on a local computer. You have the tools "
-          "run_bash, read_file, write_file, edit_file, list_dir, web_fetch. "
+          "run_bash, read_file, write_file, edit_file, grep, list_dir, web_fetch. "
           "Call a tool when needed; otherwise answer in the user's language. "
           "Work in small steps. Modify existing files with edit_file (exact "
           "string replacement); use write_file only for new files or a full "
@@ -58,6 +58,15 @@ TOOLS = [
             "new_string": {"type": "string", "description": "new text"},
             "replace_all": {"type": "boolean", "description": "replace every occurrence (default false)"}},
             "required": ["path", "old_string", "new_string"]}}},
+    {"type": "function", "function": {"name": "grep",
+        "description": "Search files for a regex, recursively. Returns "
+                       "file:line: text matches. Skips hidden dirs, "
+                       "node_modules and binary files.",
+        "parameters": {"type": "object", "properties": {
+            "pattern": {"type": "string", "description": "regular expression"},
+            "path": {"type": "string", "description": "file or directory to search (default '.')"},
+            "glob": {"type": "string", "description": "filename filter, e.g. '*.py' (default all files)"}},
+            "required": ["pattern"]}}},
     {"type": "function", "function": {"name": "list_dir",
         "description": "List directory contents.",
         "parameters": {"type": "object", "properties": {
@@ -178,6 +187,50 @@ def tool_edit_file(args):
     return f"OK, replaced {count}x in {path}."
 
 
+def tool_grep(args):
+    pattern, path = args.get("pattern", ""), args.get("path") or "."
+    glob = args.get("glob") or "*"
+    try:
+        rx = re.compile(pattern)
+    except re.error as e:
+        return f"ERROR: invalid regex: {e}"
+
+    def search_one(fp, hits):
+        try:
+            if os.path.getsize(fp) > 5_000_000:
+                return
+            with open(fp, "r", errors="replace") as f:
+                for i, line in enumerate(f, 1):
+                    if "\0" in line:  # binary file
+                        return
+                    if rx.search(line):
+                        hits.append(f"{fp}:{i}: {line.rstrip()[:200]}")
+                        if len(hits) >= 100:
+                            return
+        except OSError:
+            pass
+
+    hits = []
+    if os.path.isfile(path):
+        search_one(path, hits)
+    else:
+        for root, dirs, names in os.walk(path):
+            dirs[:] = [d for d in dirs if not d.startswith(".")
+                       and d not in ("node_modules", "__pycache__", "vendor")]
+            for name in names:
+                if fnmatch.fnmatch(name, glob):
+                    search_one(os.path.join(root, name), hits)
+                if len(hits) >= 100:
+                    break
+            if len(hits) >= 100:
+                hits.append("[truncated at 100 matches - narrow the pattern or glob]")
+                break
+    out = "\n".join(hits)
+    if len(out) > 6000:
+        out = out[:6000].rsplit("\n", 1)[0] + "\n[output truncated - narrow the pattern or glob]"
+    return out or "(no matches)"
+
+
 def tool_list_dir(args):
     path = args.get("path") or "."
     try:
@@ -226,7 +279,8 @@ def tool_web_fetch(args):
 
 DISPATCH = {"run_bash": tool_run_bash, "read_file": tool_read_file,
             "write_file": tool_write_file, "edit_file": tool_edit_file,
-            "list_dir": tool_list_dir, "web_fetch": tool_web_fetch}
+            "grep": tool_grep, "list_dir": tool_list_dir,
+            "web_fetch": tool_web_fetch}
 
 
 def chat(messages):
