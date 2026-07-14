@@ -1,12 +1,12 @@
 FROM hf.co/unsloth/gemma-4-E2B-it-GGUF:Q4_K_M
 
-# Nativni tool-calling template z GGUF zustava (zadny TEMPLATE override!)
+# Native tool-calling template from the GGUF is kept (no TEMPLATE override!)
 
-# --- Parametry pro agentni pouziti na N100 ---
+# --- Parameters for agentic use on an Intel N100 ---
 PARAMETER num_thread 4
 PARAMETER num_ctx 16384
 PARAMETER temperature 0.3
 PARAMETER top_p 0.9
 PARAMETER repeat_penalty 1.05
 
-# Zadny vlastni SYSTEM - Claude Code harness si dodava vlastni system prompt + nastroje
+# No custom SYSTEM - the harness supplies its own system prompt + tools
