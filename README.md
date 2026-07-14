@@ -24,26 +24,51 @@ beyond the write jail. When those are needed, use a full-size harness.
 ## Usage
 
 ```
-python3 agent.py          # asks before bash/file writes [y/N]
-python3 agent.py --yolo   # runs everything without asking (except dangerous commands)
+python3 agent.py                   # interactive; asks before bash/file writes [y/N]
+python3 agent.py --yolo            # runs everything without asking (except dangerous commands)
+python3 agent.py --task task.md    # non-interactive: one task, then exit
 ```
 
 Quit with `exit`, `quit`, `konec`, `/bye` or Ctrl+D. Ctrl+C during generation
 interrupts the current turn, not the whole program.
 
+### Task mode (batch)
+
+`--task file.md` reads the task from the file, runs the tool loop once and
+exits. The full transcript is written next to the task file as
+`file.md.<timestamp>.jsonl` (one JSON object per message, plus `start`/`end`
+events) for later triage. Exit codes: `0` finished, `1` error, `2` hit the
+tool-call cap, `3` stopped by the context guard. Combine with `--yolo` for
+unattended runs — dangerous commands then get auto-denied (stdin EOF), not
+auto-approved.
+
 ## Configuration (env)
 
-| Variable       | Meaning                                  | Default                  |
-|----------------|------------------------------------------|--------------------------|
-| `AGENT_MODEL`  | model name in ollama                     | `asistent-agent`         |
-| `AGENT_OLLAMA` | ollama base URL                          | `http://localhost:11434` |
-| `AGENT_ROOT`   | directory outside which writes are denied| `$HOME`                  |
+| Variable           | Meaning                                     | Default                  |
+|--------------------|---------------------------------------------|--------------------------|
+| `AGENT_MODEL`      | model name in ollama                        | `asistent-agent`         |
+| `AGENT_OLLAMA`     | ollama base URL                             | `http://localhost:11434` |
+| `AGENT_ROOT`       | directory outside which writes are denied   | `$HOME`                  |
+| `AGENT_CTX`        | context window (`num_ctx`, sent per request)| `16384`                  |
+| `AGENT_KEEP_ALIVE` | how long the model stays loaded in RAM      | `10m`                    |
+| `AGENT_THINK`      | `1`/`true` enables model thinking           | off                      |
+| `AGENT_SYSTEM`     | path to a file replacing the system prompt  | built-in prompt          |
+
+`AGENT_MODEL` has no universal default — on a machine without the
+`asistent-agent` Modelfile just point it at any tool-calling model.
+`AGENT_SYSTEM` is the hook for other applications: per-project playbooks
+(coding idioms, allowed APIs, output format) go into that file, the task
+itself into `--task`.
 
 Example with a remote machine:
 
 ```
 AGENT_OLLAMA=http://192.168.1.50:11434 AGENT_MODEL=gemma4:31b python3 agent.py
 ```
+
+The harness guards against silent context overflow: ollama reports used
+tokens per request, and at ~85 % of `AGENT_CTX` the loop stops with a clear
+message instead of letting ollama drop the system prompt.
 
 ## Tools
 

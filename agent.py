@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
 """Minimal local agent harness for ollama models with tool calling.
-Usage:    python3 agent.py          (asks before bash/file writes)
-          python3 agent.py --yolo   (runs everything without asking)
-Env:      AGENT_MODEL  - model name (default asistent-agent)
-          AGENT_OLLAMA - ollama base URL (default http://localhost:11434)
-          AGENT_ROOT   - directory the agent may write into (default $HOME)
+Usage:    python3 agent.py                     (asks before bash/file writes)
+          python3 agent.py --yolo              (runs everything without asking)
+          python3 agent.py --task task.md      (one task, JSONL transcript, exit code)
+Env:      AGENT_MODEL      - model name (default asistent-agent)
+          AGENT_OLLAMA     - ollama base URL (default http://localhost:11434)
+          AGENT_ROOT       - directory the agent may write into (default $HOME)
+          AGENT_CTX        - context window, num_ctx (default 16384)
+          AGENT_KEEP_ALIVE - how long the model stays in RAM (default 10m)
+          AGENT_THINK      - 1/true enables model thinking (default off)
+          AGENT_SYSTEM     - path to a file replacing the default system prompt
 """
-import json, os, sys, subprocess, urllib.request, gzip, zlib, re, html, fnmatch
+import json, os, sys, subprocess, urllib.request, gzip, zlib, re, html, fnmatch, time
 
 OLLAMA = os.environ.get("AGENT_OLLAMA", "http://localhost:11434") + "/api/chat"
 MODEL = os.environ.get("AGENT_MODEL", "asistent-agent")
 ROOT = os.path.realpath(os.environ.get("AGENT_ROOT", os.path.expanduser("~")))
+CTX = int(os.environ.get("AGENT_CTX", "16384"))
+KEEP_ALIVE = os.environ.get("AGENT_KEEP_ALIVE", "10m")
+THINK = os.environ.get("AGENT_THINK", "").lower() in ("1", "true", "yes")
 YOLO = "--yolo" in sys.argv
+TASK = sys.argv[sys.argv.index("--task") + 1] if "--task" in sys.argv \
+       and sys.argv.index("--task") + 1 < len(sys.argv) else None
 MAX_STEPS = 25  # cap on tool calls per user turn
 # commands that require confirmation even in YOLO mode
 DANGEROUS = re.compile(r"\bsudo\b|\brm\s+-\w*[rf]|\bmkfs|\bdd\b|>\s*/dev/"
@@ -27,6 +37,9 @@ SYSTEM = ("You are a concise agent on a local computer. You have the tools "
           "Work in small steps. Modify existing files with edit_file (exact "
           "string replacement); use write_file only for new files or a full "
           "rewrite.")
+if os.environ.get("AGENT_SYSTEM"):
+    with open(os.environ["AGENT_SYSTEM"]) as _f:
+        SYSTEM = _f.read().strip()
 
 TOOLS = [
     {"type": "function", "function": {"name": "run_bash",
@@ -284,12 +297,14 @@ DISPATCH = {"run_bash": tool_run_bash, "read_file": tool_read_file,
 
 
 def chat(messages):
-    """Streams a response from ollama; prints tokens live and returns the full message."""
+    """Streams a response from ollama; prints tokens live.
+    Returns (message, context tokens used by this request)."""
     payload = {"model": MODEL, "messages": messages, "tools": TOOLS,
-               "think": False, "stream": True}
+               "think": THINK, "stream": True, "keep_alive": KEEP_ALIVE,
+               "options": {"num_ctx": CTX}}
     req = urllib.request.Request(OLLAMA, data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
-    parts, tool_calls, prefixed = [], [], False
+    parts, tool_calls, prefixed, used = [], [], False, 0
     sys.stdout.write(f"{C['dim']}  (generating...){C['reset']}")
     sys.stdout.flush()
     with urllib.request.urlopen(req, timeout=600) as resp:
@@ -310,6 +325,7 @@ def chat(messages):
             if m.get("tool_calls"):
                 tool_calls.extend(m["tool_calls"])
             if chunk.get("done"):
+                used = chunk.get("prompt_eval_count", 0) + chunk.get("eval_count", 0)
                 break
     sys.stdout.write("\r" + " " * 16 + "\r")  # erase "(generating...)" if there was no text
     if prefixed:
@@ -317,7 +333,77 @@ def chat(messages):
     msg = {"role": "assistant", "content": "".join(parts)}
     if tool_calls:
         msg["tool_calls"] = tool_calls
-    return msg
+    return msg, used
+
+
+def log_jsonl(fh, obj):
+    if fh:
+        fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        fh.flush()
+
+
+def run_turn(messages, log=None):
+    """Runs the tool loop until the model stops. Returns a status:
+    done | steps | context | error | interrupted."""
+    for _ in range(MAX_STEPS):
+        try:
+            msg, used = chat(messages)
+        except KeyboardInterrupt:
+            print(f"\n{C['red']}Interrupted.{C['reset']}")
+            messages.append({"role": "assistant",
+                             "content": "(interrupted by user)"})
+            return "interrupted"
+        except Exception as e:
+            print(f"{C['red']}Error talking to ollama: {e}{C['reset']}")
+            log_jsonl(log, {"event": "error", "error": str(e)})
+            return "error"
+        messages.append(msg)
+        log_jsonl(log, msg)
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            return "done"
+        if used > CTX * 85 // 100:
+            print(f"{C['red']}Context nearly full ({used}/{CTX} tokens) - "
+                  f"stopping before silent truncation. Raise AGENT_CTX or "
+                  f"split the task.{C['reset']}")
+            return "context"
+        for call in calls:
+            fn = call["function"]["name"]
+            args = call["function"].get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            print(f"{C['yellow']}  -> {fn}({json.dumps(args, ensure_ascii=False)}){C['reset']}")
+            result = DISPATCH.get(fn, lambda a: f"unknown tool {fn}")(args)
+            tmsg = {"role": "tool", "tool_name": fn, "content": str(result)}
+            messages.append(tmsg)
+            log_jsonl(log, tmsg)
+    print(f"{C['red']}Stopped: hit the cap of {MAX_STEPS} tool calls.{C['reset']}")
+    return "steps"
+
+
+def run_task(path):
+    """Non-interactive mode: one task from a file, JSONL transcript, exit code."""
+    try:
+        with open(path) as f:
+            task = f.read().strip()
+    except OSError as e:
+        print(f"{C['red']}Cannot read task file: {e}{C['reset']}")
+        sys.exit(1)
+    logpath = f"{path}.{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    messages = [{"role": "system", "content": SYSTEM},
+                {"role": "user", "content": task}]
+    with open(logpath, "w") as log:
+        log_jsonl(log, {"event": "start", "model": MODEL, "ctx": CTX,
+                        "yolo": YOLO, "task_file": path})
+        for m in messages:
+            log_jsonl(log, m)
+        status = run_turn(messages, log)
+        log_jsonl(log, {"event": "end", "status": status})
+    print(f"[task {status}] transcript: {logpath}")
+    sys.exit({"done": 0, "error": 1, "steps": 2, "context": 3}.get(status, 1))
 
 
 def main():
@@ -335,35 +421,12 @@ def main():
         if not user:
             continue
         messages.append({"role": "user", "content": user})
-
-        for _ in range(MAX_STEPS):
-            try:
-                msg = chat(messages)
-            except KeyboardInterrupt:
-                print(f"\n{C['red']}Interrupted.{C['reset']}")
-                messages.append({"role": "assistant",
-                                 "content": "(interrupted by user)"})
-                break
-            except Exception as e:
-                print(f"{C['red']}Error talking to ollama: {e}{C['reset']}")
-                break
-            messages.append(msg)
-            calls = msg.get("tool_calls") or []
-            if not calls:
-                break
-            for call in calls:
-                fn = call["function"]["name"]
-                args = call["function"].get("arguments", {})
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
-                        args = {}
-                print(f"{C['yellow']}  -> {fn}({json.dumps(args, ensure_ascii=False)}){C['reset']}")
-                result = DISPATCH.get(fn, lambda a: f"unknown tool {fn}")(args)
-                messages.append({"role": "tool", "tool_name": fn, "content": str(result)})
+        run_turn(messages)
         print()
 
 
 if __name__ == "__main__":
-    main()
+    if TASK:
+        run_task(TASK)
+    else:
+        main()
