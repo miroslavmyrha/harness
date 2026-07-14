@@ -36,11 +36,21 @@ interrupts the current turn, not the whole program.
 
 `--task file.md` reads the task from the file, runs the tool loop once and
 exits. The full transcript is written next to the task file as
-`file.md.<timestamp>.jsonl` (one JSON object per message, plus `start`/`end`
-events) for later triage. Exit codes: `0` finished, `1` error, `2` hit the
-tool-call cap, `3` stopped by the context guard. Combine with `--yolo` for
-unattended runs — dangerous commands then get auto-denied (stdin EOF), not
-auto-approved.
+`file.md.<timestamp>.jsonl` (one JSON object per message; assistant lines
+carry `ctx_used` tokens and `secs` per request, plus `start`/`end` events)
+for later triage. Exit codes: `0` finished, `1` error, `2` hit the
+tool-call cap, `3` stopped by the context guard.
+
+Task mode never reads stdin: dangerous commands are auto-denied even with
+`--yolo`, and without `--yolo` every bash/write is denied — a batch can
+never stall overnight on a hidden `[y/N]` prompt. In practice `--task`
+always pairs with `--yolo`.
+
+A task file template lives in `templates/TASK.md` — rigid structure with
+grounding (a verified pattern the model must imitate), full current content
+of target files, assertions, an `ASSUMPTION FAILED:` escape hatch, and a
+`validate:` header meant to be executed by the queue runner (never by the
+model itself).
 
 ## Configuration (env)
 

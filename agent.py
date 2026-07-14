@@ -97,6 +97,9 @@ TOOLS = [
 def confirm(action, force=False):
     if YOLO and not force:
         return True
+    if TASK:  # batch run: never block on stdin, deny instead
+        print(f"{C['red']}  auto-denied (task mode): {action}{C['reset']}")
+        return False
     try:
         ans = input(f"{C['yellow']}  allow {action}? [y/N] {C['reset']}").strip().lower()
     except EOFError:
@@ -118,7 +121,9 @@ def tool_run_bash(args):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip()
-        return out[:4000] if out else f"(no output, exit code {r.returncode})"
+        if len(out) > 4000:
+            out = out[:4000] + "\n[output truncated at 4000 chars]"
+        return out if out else f"(no output, exit code {r.returncode})"
     except subprocess.TimeoutExpired:
         return "ERROR: command exceeded the 120s timeout."
     except Exception as e:
@@ -346,6 +351,7 @@ def run_turn(messages, log=None):
     """Runs the tool loop until the model stops. Returns a status:
     done | steps | context | error | interrupted."""
     for _ in range(MAX_STEPS):
+        t0 = time.time()
         try:
             msg, used = chat(messages)
         except KeyboardInterrupt:
@@ -358,7 +364,7 @@ def run_turn(messages, log=None):
             log_jsonl(log, {"event": "error", "error": str(e)})
             return "error"
         messages.append(msg)
-        log_jsonl(log, msg)
+        log_jsonl(log, {**msg, "ctx_used": used, "secs": round(time.time() - t0, 1)})
         calls = msg.get("tool_calls") or []
         if not calls:
             return "done"
