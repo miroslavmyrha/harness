@@ -347,6 +347,21 @@ def log_jsonl(fh, obj):
         fh.flush()
 
 
+def compact_messages(messages):
+    """Trim oldest conversation turns, keeping the system prompt plus roughly
+    the most recent third. The cut is cleaned up so the history contains no
+    orphaned tool results and no unexecuted trailing tool calls."""
+    keep = max(4, len(messages) // 3)
+    tail = messages[max(1, len(messages) - keep):]
+    # drop tool results whose assistant tool_calls message was trimmed away
+    while tail and tail[0].get("role") == "tool":
+        tail.pop(0)
+    # drop a trailing assistant message with tool calls that never ran
+    if tail and tail[-1].get("role") == "assistant" and tail[-1].get("tool_calls"):
+        tail.pop()
+    return [messages[0]] + tail
+
+
 def run_turn(messages, log=None):
     """Runs the tool loop until the model stops. Returns a status:
     done | steps | context | error | interrupted."""
@@ -427,7 +442,13 @@ def main():
         if not user:
             continue
         messages.append({"role": "user", "content": user})
-        run_turn(messages)
+        status = run_turn(messages)
+        if status == "context":
+            before = len(messages)
+            messages[:] = compact_messages(messages)
+            print(f"{C['yellow']}  Compacted history: {before} -> {len(messages)} "
+                  f"messages. If this happens often, raise AGENT_CTX or split "
+                  f"the work.{C['reset']}")
         print()
 
 
