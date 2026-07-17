@@ -1,6 +1,7 @@
 # harness
 
-A minimal agent harness for ollama models — one Python file, stdlib only.
+A minimal agent harness for ollama models and OpenAI-compatible servers —
+one Python file, stdlib only.
 It owns the conversation loop, dispatches tool calls, and enforces safety
 rules; the model itself only generates text and tool-call requests.
 
@@ -38,7 +39,7 @@ interrupts the current turn, not the whole program.
 
 | Variable           | Meaning                                     | Default                  |
 |--------------------|---------------------------------------------|--------------------------|
-| `AGENT_MODEL`      | model name in ollama                        | `asistent-agent`         |
+| `AGENT_MODEL`      | model name in ollama, or `provider/model` from opencode.json | `asistent-agent` |
 | `AGENT_OLLAMA`     | ollama base URL                             | `http://localhost:11434` |
 | `AGENT_ROOT`       | directory outside which writes are denied   | `$HOME`                  |
 | `AGENT_CTX`        | context window (`num_ctx`, sent per request)| `16384`                  |
@@ -61,6 +62,24 @@ Example with a remote machine:
 ```
 AGENT_OLLAMA=http://192.168.1.50:11434 AGENT_MODEL=gemma4:31b python3 agent.py
 ```
+
+### OpenAI-compatible endpoints (opencode.json)
+
+If `AGENT_MODEL` contains a slash, it is looked up as `provider/model` in
+`~/.config/opencode/opencode.json` (the [opencode](https://opencode.ai)
+config) and the harness talks to that provider's OpenAI-compatible
+`/chat/completions` endpoint instead of ollama — vLLM, llama-server, or
+anything else speaking the OpenAI protocol:
+
+```
+AGENT_MODEL=home-qwen/qwen3.6-27b python3 agent.py
+```
+
+The provider's `options.baseURL` and optional `options.apiKey` are used as
+is; the model's `limit.context` becomes the default `AGENT_CTX` (an explicit
+`AGENT_CTX` still wins) and `limit.output` is sent as `max_tokens`.
+`AGENT_THINK` is forwarded as `chat_template_kwargs.enable_thinking`;
+`AGENT_OLLAMA` and `AGENT_KEEP_ALIVE` do not apply in this mode.
 
 ## Task mode (batch)
 
@@ -108,7 +127,7 @@ the model never mistakes a partial result for a complete one.
   require confirmation even in `--yolo` mode; in task mode they are denied
   outright
 - cap of 25 tool calls per user input
-- context-overflow guard: ollama reports used tokens per request, and at
+- context-overflow guard: the server reports used tokens per request, and at
   ~85 % of `AGENT_CTX` the loop stops with a clear message instead of letting
   ollama silently drop the system prompt and tools
 - caveat: `run_bash` is inherently unrestricted (apart from confirmation) —
