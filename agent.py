@@ -3,7 +3,9 @@
 Usage:    python3 agent.py                     (asks before bash/file writes)
           python3 agent.py --yolo              (runs everything without asking)
           python3 agent.py --task task.md      (one task, JSONL transcript, exit code)
-Env:      AGENT_MODEL      - model name (default asistent-agent)
+Env:      AGENT_MODEL      - model name (default asistent-agent); a value of
+                             "provider/model" from ~/.config/opencode/opencode.json
+                             switches to that OpenAI-compatible endpoint
           AGENT_OLLAMA     - ollama base URL (default http://localhost:11434)
           AGENT_ROOT       - directory the agent may write into (default $HOME)
           AGENT_CTX        - context window, num_ctx (default 16384)
@@ -16,7 +18,30 @@ import json, os, sys, subprocess, urllib.request, gzip, zlib, re, html, fnmatch,
 OLLAMA = os.environ.get("AGENT_OLLAMA", "http://localhost:11434") + "/api/chat"
 MODEL = os.environ.get("AGENT_MODEL", "asistent-agent")
 ROOT = os.path.realpath(os.environ.get("AGENT_ROOT", os.path.expanduser("~")))
-CTX = int(os.environ.get("AGENT_CTX", "16384"))
+
+
+def load_opencode(model_spec):
+    """If model_spec is "provider/model" from ~/.config/opencode/opencode.json,
+    return that provider's OpenAI-compatible endpoint config, else None."""
+    if "/" not in model_spec:
+        return None
+    prov, _, mod = model_spec.partition("/")
+    try:
+        with open(os.path.expanduser("~/.config/opencode/opencode.json")) as f:
+            cfg = json.load(f)
+        p = cfg["provider"][prov]
+        m = p["models"][mod]
+    except (OSError, KeyError, ValueError):
+        return None
+    lim = m.get("limit", {})
+    return {"base": p["options"]["baseURL"].rstrip("/"), "model": mod,
+            "api_key": p.get("options", {}).get("apiKey"),
+            "ctx": lim.get("context"), "out": lim.get("output")}
+
+
+OPENAI = load_opencode(MODEL)
+CTX = int(os.environ.get("AGENT_CTX", 0)) \
+      or (OPENAI["ctx"] if OPENAI and OPENAI["ctx"] else 16384)
 KEEP_ALIVE = os.environ.get("AGENT_KEEP_ALIVE", "10m")
 THINK = os.environ.get("AGENT_THINK", "").lower() in ("1", "true", "yes")
 YOLO = "--yolo" in sys.argv
@@ -301,9 +326,74 @@ DISPATCH = {"run_bash": tool_run_bash, "read_file": tool_read_file,
             "web_fetch": tool_web_fetch}
 
 
+def chat_openai(messages):
+    """Streams a response from an OpenAI-compatible server (opencode.json
+    provider); prints tokens live. Returns (message, context tokens used)."""
+    msgs = []
+    for m in messages:
+        m = dict(m)
+        m.pop("tool_name", None)  # ollama-only field, some servers reject it
+        msgs.append(m)
+    payload = {"model": OPENAI["model"], "messages": msgs, "tools": TOOLS,
+               "stream": True, "stream_options": {"include_usage": True},
+               "chat_template_kwargs": {"enable_thinking": THINK}}
+    if OPENAI["out"]:
+        payload["max_tokens"] = OPENAI["out"]
+    headers = {"Content-Type": "application/json"}
+    if OPENAI["api_key"]:
+        headers["Authorization"] = "Bearer " + OPENAI["api_key"]
+    req = urllib.request.Request(OPENAI["base"] + "/chat/completions",
+                                 data=json.dumps(payload).encode(), headers=headers)
+    parts, calls, prefixed, used = [], {}, False, 0
+    sys.stdout.write(f"{C['dim']}  (generating...){C['reset']}")
+    sys.stdout.flush()
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        for raw in resp:
+            raw = raw.decode("utf-8", errors="replace").strip()
+            if not raw.startswith("data:"):
+                continue
+            data = raw[5:].strip()
+            if data == "[DONE]":
+                break
+            chunk = json.loads(data)
+            if chunk.get("usage"):
+                used = (chunk["usage"].get("prompt_tokens", 0)
+                        + chunk["usage"].get("completion_tokens", 0))
+            if not chunk.get("choices"):
+                continue
+            delta = chunk["choices"][0].get("delta") or {}
+            if delta.get("content"):
+                if not prefixed:
+                    sys.stdout.write(f"\r{' '*16}\r{C['cyan']}agent>{C['reset']} ")
+                    prefixed = True
+                sys.stdout.write(delta["content"])
+                sys.stdout.flush()
+                parts.append(delta["content"])
+            for tc in delta.get("tool_calls") or []:
+                i = tc.get("index", 0)
+                c = calls.setdefault(i, {"id": f"call_{i}", "type": "function",
+                                         "function": {"name": "", "arguments": ""}})
+                if tc.get("id"):
+                    c["id"] = tc["id"]
+                f = tc.get("function") or {}
+                if f.get("name"):
+                    c["function"]["name"] = f["name"]
+                if f.get("arguments"):
+                    c["function"]["arguments"] += f["arguments"]
+    sys.stdout.write("\r" + " " * 16 + "\r")
+    if prefixed:
+        print()
+    msg = {"role": "assistant", "content": "".join(parts)}
+    if calls:
+        msg["tool_calls"] = [calls[i] for i in sorted(calls)]
+    return msg, used
+
+
 def chat(messages):
     """Streams a response from ollama; prints tokens live.
     Returns (message, context tokens used by this request)."""
+    if OPENAI:
+        return chat_openai(messages)
     payload = {"model": MODEL, "messages": messages, "tools": TOOLS,
                "think": THINK, "stream": True, "keep_alive": KEEP_ALIVE,
                "options": {"num_ctx": CTX}}
@@ -399,6 +489,8 @@ def run_turn(messages, log=None):
             print(f"{C['yellow']}  -> {fn}({json.dumps(args, ensure_ascii=False)}){C['reset']}")
             result = DISPATCH.get(fn, lambda a: f"unknown tool {fn}")(args)
             tmsg = {"role": "tool", "tool_name": fn, "content": str(result)}
+            if call.get("id"):
+                tmsg["tool_call_id"] = call["id"]
             messages.append(tmsg)
             log_jsonl(log, tmsg)
     print(f"{C['red']}Stopped: hit the cap of {MAX_STEPS} tool calls.{C['reset']}")
