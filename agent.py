@@ -49,7 +49,7 @@ TASK = sys.argv[sys.argv.index("--task") + 1] if "--task" in sys.argv \
        and sys.argv.index("--task") + 1 < len(sys.argv) else None
 MAX_STEPS = 25  # cap on tool calls per user turn
 # commands that require confirmation even in YOLO mode
-DANGEROUS = re.compile(r"\bsudo\b|\brm\s+-\w*[rf]|\bmkfs|\bdd\b|>\s*/dev/"
+DANGEROUS = re.compile(r"\bsudo\b|\brm\s+-\w*[rf]|\bmkfs|\bdd\b|>\s*/dev/(?!null\b|zero\b)"
                        r"|\bshutdown\b|\breboot\b|\bchmod\s+-R|\bchown\s+-R")
 
 # colors
