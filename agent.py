@@ -356,6 +356,9 @@ def chat_openai(messages):
             if data == "[DONE]":
                 break
             chunk = json.loads(data)
+            if os.environ.get("AGENT_DEBUG_RAW"):
+                with open(os.environ["AGENT_DEBUG_RAW"], "a") as dbg:
+                    dbg.write(data + "\n")
             if chunk.get("usage"):
                 used = (chunk["usage"].get("prompt_tokens", 0)
                         + chunk["usage"].get("completion_tokens", 0))
@@ -468,6 +471,16 @@ def run_turn(messages, log=None):
             print(f"{C['red']}Error talking to ollama: {e}{C['reset']}")
             log_jsonl(log, {"event": "error", "error": str(e)})
             return "error"
+        for call in msg.get("tool_calls") or []:
+            # A model can emit a tool_call with an empty/missing function
+            # name (seen from ThinkingCap under load). An empty name is
+            # invalid per the OpenAI tool-calling schema: leaving it as ""
+            # doesn't just fail to dispatch, it poisons the stored history
+            # and the *next* request gets rejected with a 400 from the
+            # server, killing the whole run. Substitute a placeholder name
+            # before this message is ever stored or replayed.
+            if not call.get("function", {}).get("name"):
+                call.setdefault("function", {})["name"] = "invalid_tool_call"
         messages.append(msg)
         log_jsonl(log, {**msg, "ctx_used": used, "secs": round(time.time() - t0, 1)})
         calls = msg.get("tool_calls") or []

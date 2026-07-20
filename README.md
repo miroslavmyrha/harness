@@ -46,6 +46,7 @@ interrupts the current turn, not the whole program.
 | `AGENT_KEEP_ALIVE` | how long the model stays loaded in RAM      | `10m`                    |
 | `AGENT_THINK`      | `1`/`true` enables model thinking           | off                      |
 | `AGENT_SYSTEM`     | path to a file replacing the system prompt  | built-in prompt          |
+| `AGENT_DEBUG_RAW`  | file path: appends every raw SSE `data:` line from an OpenAI-compatible server (opencode.json mode) to it, for debugging malformed streamed tool calls | off |
 
 The `asistent-agent` default only exists on the machine the Modelfiles were
 built for — elsewhere just point `AGENT_MODEL` at any tool-calling model.
