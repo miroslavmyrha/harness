@@ -20,9 +20,10 @@ running shell commands, and fetching web pages. It exists to:
   larger agentic codegen pipeline: the layers above it (task queue, validation,
   git isolation) live outside this repo by design.
 
-Non-goals: multi-agent orchestration, context summarization/compaction,
-sandboxing beyond the write jail, parallelism. When those are needed, use a
-full-size harness.
+Non-goals: multi-agent orchestration, LLM-based context summarization (on
+context overflow the interactive mode only trims the oldest turns), sandboxing
+beyond the write jail, parallelism. When those are needed, use a full-size
+harness.
 
 ## Usage
 
@@ -92,8 +93,9 @@ above the harness supplies task files and checks results.
 
 - **Transcript**: written next to the task file as `file.md.<timestamp>.jsonl`
   — one JSON object per message, `start`/`end` events, and per-request
-  `ctx_used` (context tokens) and `secs` on assistant lines, so a morning
-  triage script can see what happened and what each task cost.
+  `ctx_used` (context tokens), `usage` (exact prompt/completion token counts)
+  and `secs` on assistant lines, so a morning triage script can see what
+  happened and what each task cost.
 - **Exit codes**: `0` finished, `1` error, `2` hit the tool-call cap,
   `3` stopped by the context guard.
 - **No stdin, ever**: dangerous commands are auto-denied even with `--yolo`,
@@ -129,7 +131,10 @@ the model never mistakes a partial result for a complete one.
 - dangerous commands (`sudo`, `rm -rf`, `dd`, `mkfs`, writes to `/dev/`, …)
   require confirmation even in `--yolo` mode; in task mode they are denied
   outright
-- cap of 25 tool calls per user input
+- two tool-turn budgets per user input: work turns (bash/write/edit, default
+  25 via `AGENT_MAX_STEPS`) and read-only turns (read/list/grep/fetch, default
+  2× that via `AGENT_MAX_READS`) — exploration can't eat the work budget,
+  but can't loop forever either
 - context-overflow guard: the server reports used tokens per request, and at
   ~85 % of `AGENT_CTX` the loop stops with a clear message instead of letting
   ollama silently drop the system prompt and tools
