@@ -11,6 +11,8 @@ Env:      AGENT_MODEL      - model name (default asistent-agent); a value of
           AGENT_CTX        - context window, num_ctx (default 16384)
           AGENT_KEEP_ALIVE - how long the model stays in RAM (default 10m)
           AGENT_THINK      - 1/true enables model thinking (default off)
+          AGENT_MAX_STEPS  - cap on work tool turns per user turn (default 25)
+          AGENT_MAX_READS  - cap on read-only tool turns (default 2x MAX_STEPS)
           AGENT_SYSTEM     - path to a file replacing the default system prompt
 """
 import json, os, sys, subprocess, urllib.request, gzip, zlib, re, html, fnmatch, time
@@ -47,7 +49,12 @@ THINK = os.environ.get("AGENT_THINK", "").lower() in ("1", "true", "yes")
 YOLO = "--yolo" in sys.argv
 TASK = sys.argv[sys.argv.index("--task") + 1] if "--task" in sys.argv \
        and sys.argv.index("--task") + 1 < len(sys.argv) else None
-MAX_STEPS = 25  # cap on tool calls per user turn
+MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", 25))  # cap on work tool turns (bash/write/edit)
+# read-only tool turns (read/list/grep/fetch) have their own, looser cap so
+# exploration doesn't eat the work budget - but can't loop forever either
+MAX_READS = int(os.environ.get("AGENT_MAX_READS", 2 * MAX_STEPS))
+WORK_TOOLS = {"run_bash", "write_file", "edit_file"}
+LAST_USAGE = {}  # prompt/completion token counts of the most recent model reply
 # commands that require confirmation even in YOLO mode
 DANGEROUS = re.compile(r"\bsudo\b|\brm\s+-\w*[rf]|\bmkfs|\bdd\b|>\s*/dev/(?!null\b|zero\b)"
                        r"|\bshutdown\b|\breboot\b|\bchmod\s+-R|\bchown\s+-R")
@@ -360,8 +367,10 @@ def chat_openai(messages):
                 with open(os.environ["AGENT_DEBUG_RAW"], "a") as dbg:
                     dbg.write(data + "\n")
             if chunk.get("usage"):
-                used = (chunk["usage"].get("prompt_tokens", 0)
-                        + chunk["usage"].get("completion_tokens", 0))
+                global LAST_USAGE
+                LAST_USAGE = {"prompt_tokens": chunk["usage"].get("prompt_tokens", 0),
+                              "completion_tokens": chunk["usage"].get("completion_tokens", 0)}
+                used = LAST_USAGE["prompt_tokens"] + LAST_USAGE["completion_tokens"]
             if not chunk.get("choices"):
                 continue
             delta = chunk["choices"][0].get("delta") or {}
@@ -423,7 +432,10 @@ def chat(messages):
             if m.get("tool_calls"):
                 tool_calls.extend(m["tool_calls"])
             if chunk.get("done"):
-                used = chunk.get("prompt_eval_count", 0) + chunk.get("eval_count", 0)
+                global LAST_USAGE
+                LAST_USAGE = {"prompt_tokens": chunk.get("prompt_eval_count", 0),
+                              "completion_tokens": chunk.get("eval_count", 0)}
+                used = LAST_USAGE["prompt_tokens"] + LAST_USAGE["completion_tokens"]
                 break
     sys.stdout.write("\r" + " " * 16 + "\r")  # erase "(generating...)" if there was no text
     if prefixed:
@@ -458,7 +470,8 @@ def compact_messages(messages):
 def run_turn(messages, log=None):
     """Runs the tool loop until the model stops. Returns a status:
     done | steps | context | error | interrupted."""
-    for _ in range(MAX_STEPS):
+    work_turns = read_turns = 0
+    while work_turns < MAX_STEPS and read_turns < MAX_READS:
         t0 = time.time()
         try:
             msg, used = chat(messages)
@@ -482,10 +495,15 @@ def run_turn(messages, log=None):
             if not call.get("function", {}).get("name"):
                 call.setdefault("function", {})["name"] = "invalid_tool_call"
         messages.append(msg)
-        log_jsonl(log, {**msg, "ctx_used": used, "secs": round(time.time() - t0, 1)})
+        log_jsonl(log, {**msg, "ctx_used": used, "usage": LAST_USAGE,
+                        "secs": round(time.time() - t0, 1)})
         calls = msg.get("tool_calls") or []
         if not calls:
             return "done"
+        if any(c["function"]["name"] in WORK_TOOLS for c in calls):
+            work_turns += 1
+        else:
+            read_turns += 1
         if used > CTX * 85 // 100:
             print(f"{C['red']}Context nearly full ({used}/{CTX} tokens) - "
                   f"stopping before silent truncation. Raise AGENT_CTX or "
@@ -506,7 +524,8 @@ def run_turn(messages, log=None):
                 tmsg["tool_call_id"] = call["id"]
             messages.append(tmsg)
             log_jsonl(log, tmsg)
-    print(f"{C['red']}Stopped: hit the cap of {MAX_STEPS} tool calls.{C['reset']}")
+    print(f"{C['red']}Stopped: hit the cap ({work_turns}/{MAX_STEPS} work, "
+          f"{read_turns}/{MAX_READS} read-only tool turns).{C['reset']}")
     return "steps"
 
 

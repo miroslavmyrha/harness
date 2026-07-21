@@ -45,6 +45,8 @@ interrupts the current turn, not the whole program.
 | `AGENT_CTX`        | context window (`num_ctx`, sent per request)| `16384`                  |
 | `AGENT_KEEP_ALIVE` | how long the model stays loaded in RAM      | `10m`                    |
 | `AGENT_THINK`      | `1`/`true` enables model thinking           | off                      |
+| `AGENT_MAX_STEPS`  | cap on work tool turns (bash/write/edit) per user turn | `25`          |
+| `AGENT_MAX_READS`  | separate cap on read-only tool turns (read/list/grep/fetch) | 2× `AGENT_MAX_STEPS` |
 | `AGENT_SYSTEM`     | path to a file replacing the system prompt  | built-in prompt          |
 | `AGENT_DEBUG_RAW`  | file path: appends every raw SSE `data:` line from an OpenAI-compatible server (opencode.json mode) to it, for debugging malformed streamed tool calls | off |
 
