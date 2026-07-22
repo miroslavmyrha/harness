@@ -542,7 +542,8 @@ def run_task(path):
                 {"role": "user", "content": task}]
     with open(logpath, "w") as log:
         log_jsonl(log, {"event": "start", "model": MODEL, "ctx": CTX,
-                        "yolo": YOLO, "task_file": path})
+                        "yolo": YOLO, "task_file": path,
+                        "system": os.environ.get("AGENT_SYSTEM") or "(built-in)"})
         for m in messages:
             log_jsonl(log, m)
         status = run_turn(messages, log)
