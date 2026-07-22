@@ -492,8 +492,20 @@ def run_turn(messages, log=None):
             # and the *next* request gets rejected with a 400 from the
             # server, killing the whole run. Substitute a placeholder name
             # before this message is ever stored or replayed.
-            if not call.get("function", {}).get("name"):
-                call.setdefault("function", {})["name"] = "invalid_tool_call"
+            fn = call.setdefault("function", {})
+            if not fn.get("name"):
+                fn["name"] = "invalid_tool_call"
+            # Same failure mode, different field: arguments that are not valid JSON
+            # (seen from ThinkingCap: a stray trailing brace) are rejected by the
+            # server when the history is replayed, so the run dies on the *next*
+            # request with a 400. Normalize before the message is stored; the tool
+            # then returns a normal error the model can recover from.
+            raw = fn.get("arguments")
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    json.loads(raw)
+                except ValueError:
+                    fn["arguments"] = "{}"
         messages.append(msg)
         log_jsonl(log, {**msg, "ctx_used": used, "usage": LAST_USAGE,
                         "secs": round(time.time() - t0, 1)})
