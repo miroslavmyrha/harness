@@ -1,9 +1,14 @@
 # harness
 
 A minimal agent harness for ollama models and OpenAI-compatible servers —
-one Python file, stdlib only.
-It owns the conversation loop, dispatches tool calls, and enforces safety
-rules; the model itself only generates text and tool-call requests.
+stdlib only, two files that do one job each:
+
+- **`agent.py`** — the conversation loop. Dispatches tool calls and enforces
+  the safety rules; the model itself only generates text and tool-call
+  requests.
+- **`runner.py`** — batch layer. Runs task files with git isolation and
+  executes each task's `validate:` command *outside* the model, because the
+  model's own report of success is not evidence.
 
 ## Intent
 
@@ -17,8 +22,15 @@ running shell commands, and fetching web pages. It exists to:
   rule is a few visible lines, not a framework,
 - be ready to point at bigger models on a remote inference box
   (`AGENT_OLLAMA`) without code changes, as the executor building block of a
-  larger agentic codegen pipeline: the layers above it (task queue, validation,
-  git isolation) live outside this repo by design.
+  larger agentic codegen pipeline.
+
+`runner.py` is the queue/validation/git-isolation layer that pipeline needs.
+It lives here rather than in its own repo for one reason: the contract
+between the two files (task front matter, exit codes, transcript naming) is
+not something two repos can keep in step silently — see
+[Contract between agent.py and runner.py](#contract-between-agentpy-and-runnerpy).
+`agent.py` stays free of it: it does not import, know about, or need the
+runner.
 
 Non-goals: multi-agent orchestration, LLM-based context summarization (on
 context overflow the interactive mode only trims the oldest turns), sandboxing
@@ -31,6 +43,8 @@ harness.
 python3 agent.py                   # interactive; asks before bash/file writes [y/N]
 python3 agent.py --yolo            # runs everything without asking (except dangerous commands)
 python3 agent.py --task task.md    # non-interactive: one task, then exit
+
+python3 runner.py task.md --project ~/myapp [--playbook symfony]
 ```
 
 Quit with `exit`, `quit`, `konec`, `/bye` or Ctrl+D. Ctrl+C during generation
@@ -88,8 +102,8 @@ is; the model's `limit.context` becomes the default `AGENT_CTX` (an explicit
 ## Task mode (batch)
 
 `--task file.md` reads the task from the file, runs the tool loop once and
-exits — the unit of work for unattended batch runs, where a queue script
-above the harness supplies task files and checks results.
+exits — the unit of work for unattended batch runs. `runner.py` is what
+supplies those task files and checks the results.
 
 - **Transcript**: written next to the task file as `file.md.<timestamp>.jsonl`
   — one JSON object per message, `start`/`end` events, and per-request
@@ -107,8 +121,89 @@ above the harness supplies task files and checks results.
 A task file template lives in [`templates/TASK.md`](templates/TASK.md):
 rigid structure with grounding (a verified pattern the model must imitate),
 the full current content of target files, small ordered steps, assertions,
-an `ASSUMPTION FAILED:` escape hatch, and a `validate:` header meant to be
-executed by the queue runner — never by the model itself.
+an `ASSUMPTION FAILED:` escape hatch, and a `validate:` header executed by
+`runner.py` — never by the model itself.
+
+## Batch runs (`runner.py`)
+
+```
+python3 runner.py TASK.md [TASK2.md …] --project ~/myapp [--playbook symfony]
+```
+
+Six benchmark rounds produced one consistent result: **not a single bug was
+ever caught by the model's own final answer.** Every one was found by a
+`curl`, a puppeteer run or a compiler. So the runner never asks the model
+how it went. One task run is:
+
+1. **Parse the front matter** — `validate:`, `retry:`, `timeout:`, `steps:`, `reads:`
+2. **Isolate in git** — refuse a dirty tree, branch `task/<name>-<time>` from
+   HEAD, so the baseline is always a rollback point and the task's diff is
+   always separable from your own work
+3. **Run `agent.py`** with `AGENT_ROOT` *and cwd* set to the project, the
+   playbook in `AGENT_SYSTEM`, and the caps from the front matter
+4. **Commit whatever appeared.** An empty diff is a verdict, not a no-op:
+   `NO CHANGES` means the model claimed success and touched nothing
+5. **Run `validate:`** in the project dir, with a timeout. Exit 0 is the only
+   thing that counts as a pass
+6. **On failure, retry once per `retry:`** with a generated fix task: the real
+   symptom (the validate output), the cause placed on the model, and
+   `edit_file`-only instructions — full rewrites during fixes have silently
+   deleted working code
+7. **Append one JSON line** to `runs.jsonl`: verdict, branch, commits, exact
+   token counts summed from the transcript, seconds, diffstat
+
+Verdicts: `PASS`, `FAIL`, `NO CHANGES`, `UNVERIFIED` (no `validate:` header —
+the task ran, but nothing proves anything, and it never shows up as green).
+A failed run is left on its branch with the inspect/discard commands printed;
+nothing is discarded automatically.
+
+Front matter is four scalar keys, deliberately not YAML — a missing PyYAML
+must never be why a night's queue did not run. Keep task files **outside**
+the project repo, otherwise they dirty the tree they are supposed to measure.
+See [`examples/fizzbuzz.md`](examples/fizzbuzz.md).
+
+| flag | meaning |
+|---|---|
+| `--project DIR` | target repo, becomes `AGENT_ROOT` and cwd (default `.`) |
+| `--playbook X` | name from `~/agent-playbooks/build` or a path → `AGENT_SYSTEM` |
+| `--model X` | `AGENT_MODEL` override |
+| `--steps N` | default step cap when the task does not set one |
+| `--log PATH` | run log (default `runs.jsonl` beside `runner.py`) |
+| `--allow-dirty` | run despite uncommitted changes — they are parked in their own `pre-task WIP` commit first, so they are never attributed to the agent |
+| `--keep-going` | continue the queue after a failed task |
+| `--dry-run` | parse and report, run nothing |
+
+Exit code is 0 only if every task passed. Sequential only; parallel tasks
+would need one worktree each. Only `validate:` is time-bounded — a wedged
+agent run blocks the queue.
+
+### Contract between `agent.py` and `runner.py`
+
+The runner drives the agent as a subprocess, so it depends on six details.
+They are listed here because a silent drift between them does not crash
+anything — it produces confident, wrong verdicts.
+
+| # | The runner relies on | Defined in |
+|---|---|---|
+| 1 | `agent.py` sitting next to `runner.py` | `HARNESS` in `runner.py` |
+| 2 | the `--yolo --task <file>` CLI | `agent.py` argv parsing |
+| 3 | exit codes `0/1/2/3` = done / error / cap / context | `run_task()` |
+| 4 | transcript at `<task>.<timestamp>.jsonl` | `run_task()` |
+| 5 | `usage.prompt_tokens` / `usage.completion_tokens` per assistant line | `run_turn()` |
+| 6 | the `AGENT_*` environment variable names | top of `agent.py` |
+
+Changing any of them means changing both files in the same commit.
+
+### Tests
+
+```
+bash tests/test_runner.sh
+```
+
+Thirteen assertions driving the whole loop against `tests/stub_agent.py`, a
+fake agent with scripted behaviours (`ok`, `broken`, `fix`, `nothing`,
+`capped`) swapped in via `TASK_RUNNER_AGENT` — the plumbing is proven without
+spending GPU time.
 
 ## Tools
 
@@ -148,6 +243,21 @@ the model never mistakes a partial result for a complete one.
   read and ship out through the same shell, and text arriving via `web_fetch`
   reaches the model with that shell still attached. For real autonomous use
   run it under a separate user or in a container.
+
+What that adds up to, checked by test rather than by reading the code:
+
+- the write jail **holds** — `..` traversal and a symlinked directory inside
+  `AGENT_ROOT` were both refused, the file outside stayed untouched
+- the dangerous-pattern list **does not** — `rm -rf /path` is stopped, while
+  `rm --recursive --force /path`, `find … -delete`, `git clean -fdx`,
+  `python3 -c "shutil.rmtree(…)"` and `curl -F data=@~/.ssh/id_rsa …` all
+  pass. It is a guard against slips; do not treat it as a boundary
+- `runner.py`'s git isolation sees only what lands **inside the project**;
+  a file written elsewhere through the shell is invisible to it. Running the
+  agent with cwd set to the project makes that unlikely, not impossible
+
+The fix for the gap is placement — a separate user, a container — not a
+longer regex.
 
 ## Modelfiles
 
