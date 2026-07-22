@@ -12,7 +12,7 @@ validate command executed here (never by the model), one fix attempt per
 retry with the real failure output as the symptom, one line per run in the
 log. It does not touch agent.py and has no dependencies beyond git.
 """
-import argparse, json, os, re, subprocess, sys, time, glob
+import argparse, glob, json, os, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 # TASK_RUNNER_AGENT swaps in a stub agent; the tests drive the whole loop
@@ -99,7 +99,16 @@ def slug(path):
 # -------------------------------------------------------------- agent + eval
 
 def run_agent(task_path, project, env_extra, model, playbook, steps, reads):
-    """One agent.py invocation. Returns (exit_code, transcript_path, tokens)."""
+    """One agent.py invocation. Returns (exit_code, transcript_path, tokens).
+
+    The agent is handed the task *body* only, never the front matter.
+    `validate:` in particular is the acceptance test - handing it over turns
+    "implement the spec" into "satisfy this exact command", a different and
+    much easier task. Observed for real: given the path, a model read the
+    check script before writing a line of code. Keeping the script outside
+    the project does not help - `read_file` is not confined to `AGENT_ROOT` -
+    but not naming it does."""
+    _, body = parse_task(task_path)
     env = {**os.environ, "AGENT_ROOT": project, **env_extra}
     if model:
         env["AGENT_MODEL"] = model
@@ -107,16 +116,25 @@ def run_agent(task_path, project, env_extra, model, playbook, steps, reads):
         env["AGENT_SYSTEM"] = playbook
     env["AGENT_MAX_STEPS"] = str(steps)
     env["AGENT_MAX_READS"] = str(reads)
-    before = set(glob.glob(task_path + ".*.jsonl"))
     t0 = time.time()
-    # cwd=project is not cosmetic: AGENT_ROOT only guards write_file/edit_file,
-    # while relative paths and every run_bash command resolve against the
-    # process cwd. Launched from anywhere else, a model writing "app/x.py"
-    # lands outside the project - seen on the first real run of this runner.
-    r = subprocess.run([sys.executable, HARNESS, "--yolo", "--task", task_path],
-                       env=env, cwd=project)
-    new = sorted(set(glob.glob(task_path + ".*.jsonl")) - before)
-    transcript = new[-1] if new else None
+    with tempfile.TemporaryDirectory() as tmp:
+        prompt = os.path.join(tmp, os.path.basename(task_path))
+        with open(prompt, "w") as f:
+            f.write(body + "\n")
+        # cwd=project is not cosmetic: AGENT_ROOT only guards write_file/edit_file,
+        # while relative paths and every run_bash command resolve against the
+        # process cwd. Launched from anywhere else, a model writing "app/x.py"
+        # lands outside the project - seen on the first real run of this runner.
+        r = subprocess.run([sys.executable, HARNESS, "--yolo", "--task", prompt],
+                           env=env, cwd=project)
+        # The agent writes its transcript next to the prompt it was given;
+        # move it back beside the real task file, keeping the timestamp name.
+        produced = sorted(glob.glob(prompt + ".*.jsonl"))
+        transcript = None
+        if produced:
+            stamp = os.path.basename(produced[-1]).rsplit(".", 2)[-2]
+            transcript = f"{task_path}.{stamp}.jsonl"
+            shutil.move(produced[-1], transcript)
     return r.returncode, transcript, tokens_of(transcript), round(time.time() - t0)
 
 
@@ -259,7 +277,7 @@ def run_one(task_path, args, log):
 
     for attempt in range(retries + 2):        # initial run + one per retry
         code, transcript, tokens, secs = run_agent(
-            current, project, {}, args.model, args.playbook, steps, reads)
+            current, project, {}, args.model, args.playbook, steps, reads)  # current: task path
         record["tokens"] += tokens
         record["secs"] += secs
         status = AGENT_STATUS.get(code, f"exit {code}")

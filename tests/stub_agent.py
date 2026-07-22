@@ -18,10 +18,12 @@ root = os.environ["AGENT_ROOT"]
 behaviour = os.environ.get("STUB_BEHAVIOUR", "ok")
 is_fix = ".fix" in os.path.basename(task)
 target = os.path.join(root, "answer.txt")
+received = open(task).read()   # exactly what the runner handed the model
 
 with open(f"{task}.{time.strftime('%Y%m%d-%H%M%S')}.jsonl", "w") as log:
     log.write(json.dumps({"event": "start", "task_file": task,
                           "system": os.environ.get("AGENT_SYSTEM", "(built-in)")}) + "\n")
+    log.write(json.dumps({"role": "user", "content": received}) + "\n")
     log.write(json.dumps({"role": "assistant", "content": "done",
                           "usage": {"prompt_tokens": 1000, "completion_tokens": 50}}) + "\n")
     log.write(json.dumps({"event": "end", "status": "done"}) + "\n")

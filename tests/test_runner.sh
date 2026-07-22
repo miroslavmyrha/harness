@@ -74,6 +74,24 @@ git -C "$WORK" show --stat --format= HEAD | grep -q wip.txt \
 git -C "$WORK" log --oneline | grep -q "pre-task WIP" \
     && echo "PASS  WIP preserved in its own commit" \
     || { echo "FAIL  WIP lost"; fails=$((fails + 1)); }
+# 9c. the validate command / front matter must never reach the model
+setup 0
+cat > "$TASKS/task.md" <<'EOF'
+---
+validate: bash /secret/checks/SENTINEL_VALIDATE.sh
+retry: 0
+---
+# Task: SENTINEL_BODY write the answer
+EOF
+STUB_BEHAVIOUR=ok run leak
+sent=$(cat "$TASKS"/task.md.*.jsonl | python3 -c "import json,sys
+recv=''.join(json.loads(l).get('content','') for l in sys.stdin
+             if l.strip() and json.loads(l).get('role')=='user')
+print('BODY' if 'SENTINEL_BODY' in recv else 'no-body',
+      'LEAK' if ('SENTINEL_VALIDATE' in recv or 'validate:' in recv) else 'clean')")
+[ "$sent" = "BODY clean" ] \
+    && echo "PASS  model gets the body, not the validate command ($sent)" \
+    || { echo "FAIL  leak check: $sent"; fails=$((fails + 1)); }
 # 9. token accounting reaches the log
 setup 0; STUB_BEHAVIOUR=ok run tokens
 python3 -c "import json,sys
