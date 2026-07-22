@@ -147,6 +147,12 @@ def safe_path(path):
 
 def tool_run_bash(args):
     cmd = args.get("command", "")
+    # An empty command is a malformed call, but `sh -c ""` exits 0, so it used
+    # to come back as "(no output, exit code 0)" - indistinguishable from a
+    # command that ran and printed nothing. The model then proceeds as if its
+    # check had passed.
+    if not cmd.strip():
+        return "ERROR: run_bash called without a command."
     print(f"{C['dim']}  $ {cmd}{C['reset']}")
     if not confirm(f"command: {cmd}", force=bool(DANGEROUS.search(cmd))):
         return "DENIED by user."
