@@ -168,37 +168,38 @@ validate: {validate}
 retry: 0
 ---
 
-# Task: opravit selhání ověření
+# Task: fix the failing check
 
 ## Symptom
 
-Po předchozím tasku selhal ověřovací příkaz spuštěný mimo tvoji session:
+After the previous task, the validation command - run outside your session -
+failed:
 
 ```
 $ {cmd}
 {output}
 ```
 
-## Co udělat
+## What to do
 
-Příčina je v kódu, který jsi právě napsal - ne v ověřovacím příkazu a ne
-v prostředí. Najdi ji, oprav ji **minimálním zásahem** a nic dalšího
-nepředělávej.
+The cause is in the code you just wrote, not in the validation command and
+not in the environment. Find it, fix it with the **smallest possible
+change**, and rewrite nothing else.
 
-- Soubory upravuj **výhradně přes `edit_file`**. `write_file` na existující
-  soubor tady nepoužívej - přepsání celého souboru u opravy opakovaně smazalo
-  kód, který fungoval.
-- Po každé úpravě si změněné místo znovu přečti přes `read_file` a ověř, že
-  zásah dopadl, jak jsi zamýšlel.
-- Ověřovací příkaz nespouštěj a neupravuj, běží mimo tebe.
+- Change files **through `edit_file` only**. Do not use `write_file` on an
+  existing file here - during fixes, rewriting a whole file has repeatedly
+  deleted code that worked.
+- After each change, read the changed section back with `read_file` and
+  confirm the edit landed as you intended.
+- Do not run or modify the validation command; it runs outside your session.
 
 ## Escape hatch
 
-Pokud je příčina mimo tvůj kód nebo ti k opravě něco chybí, neimprovizuj
-náhradu: napiš jediný řádek začínající `ASSUMPTION FAILED:` s popisem toho,
-co chybí, a skonči.
+If the cause lies outside your code, or something you need for the fix is
+missing, do not improvise a replacement: write a single line starting with
+`ASSUMPTION FAILED:` describing what is missing, and stop.
 
-## Původní zadání (kontext)
+## Original task (context)
 
 {original}
 """

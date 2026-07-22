@@ -10,25 +10,25 @@ steps: 8
 
 ## Goal
 
-V kořeni projektu existuje soubor `fizzbuzz.py`, který po spuštění
-`python3 fizzbuzz.py` vypíše čísla 1 až 15, každé na vlastní řádek.
+The project root contains a file `fizzbuzz.py` which, run as
+`python3 fizzbuzz.py`, prints the numbers 1 to 15, each on its own line.
 
-## Pravidla výpisu
+## Output rules
 
-- číslo dělitelné 3 i 5 → `FizzBuzz`
-- číslo dělitelné 3 → `Fizz`
-- číslo dělitelné 5 → `Buzz`
-- jinak samotné číslo
+- divisible by both 3 and 5 → `FizzBuzz`
+- divisible by 3 → `Fizz`
+- divisible by 5 → `Buzz`
+- otherwise the number itself
 
 ## Assertions (definition of done)
 
-- `python3 fizzbuzz.py` vypíše přesně 15 řádků
-- třetí řádek je `Fizz`, pátý `Buzz`, patnáctý `FizzBuzz`
-- skript nic nečte ze vstupu a nebere argumenty
+- `python3 fizzbuzz.py` prints exactly 15 lines
+- the third line is `Fizz`, the fifth `Buzz`, the fifteenth `FizzBuzz`
+- the script reads no input and takes no arguments
 
-Ověřovací příkaz nespouštěj sám, běží mimo tvoji session.
+Do not run the validation command yourself; it runs outside your session.
 
 ## Escape hatch
 
-Pokud ti něco chybí nebo si zadání odporuje, neimprovizuj: napiš jediný
-řádek začínající `ASSUMPTION FAILED:` a skonči.
+If something is missing or the task contradicts itself, do not improvise:
+write a single line starting with `ASSUMPTION FAILED:` and stop.

@@ -19,7 +19,7 @@ setup() {                       # fresh throwaway project + task dir beside it
 validate: test "\$(cat answer.txt)" = "42"
 retry: ${1:-0}
 ---
-# Task: napsat odpověď
+# Task: write the answer
 EOF
 }
 
@@ -42,7 +42,7 @@ setup 0; STUB_BEHAVIOUR=ok      run happy;    check "passing task" PASS
 setup 0; STUB_BEHAVIOUR=broken  run broken;   check "failing validate" FAIL
 # 3. fix loop: first attempt fails, retry passes
 setup 1; STUB_BEHAVIOUR=fix     run fix;      check "fix loop recovers" PASS
-grep -q "opravit selhání ověření" "$TASKS"/task.md.fix1.md \
+grep -q "fix the failing check" "$TASKS"/task.md.fix1.md \
     && echo "PASS  fix task written from template" \
     || { echo "FAIL  fix task missing"; fails=$((fails + 1)); }
 # 4. model claims success, writes nothing
@@ -52,7 +52,7 @@ setup 0; STUB_BEHAVIOUR=capped  run capped;   check "step cap" FAIL
 grep -q "hit step cap" "$LOG" && echo "PASS  agent status recorded" \
     || { echo "FAIL  agent status missing"; fails=$((fails + 1)); }
 # 6. no validate: header -> honest UNVERIFIED, not a green PASS
-setup 0; printf -- '---\nretry: 0\n---\n# Task: bez ověření\n' > "$TASKS/task.md"
+setup 0; printf -- '---\nretry: 0\n---\n# Task: unverifiable\n' > "$TASKS/task.md"
 STUB_BEHAVIOUR=ok run noval; check "missing validate header" UNVERIFIED
 # 7. dirty tree is refused
 setup 0; echo dirt > "$WORK/dirt.txt"
@@ -66,7 +66,7 @@ after=$(git -C "$WORK" rev-parse master 2>/dev/null || git -C "$WORK" rev-parse 
 [ "$before" = "$after" ] && echo "PASS  base branch untouched" \
     || { echo "FAIL  base branch moved"; fails=$((fails + 1)); }
 # 9b. --allow-dirty must not attribute your WIP to the agent
-setup 0; echo "moje rozdelana prace" > "$WORK/wip.txt"
+setup 0; echo "my work in progress" > "$WORK/wip.txt"
 STUB_BEHAVIOUR=ok run wip --allow-dirty
 git -C "$WORK" show --stat --format= HEAD | grep -q wip.txt \
     && { echo "FAIL  WIP landed in the agent's commit"; fails=$((fails + 1)); } \
