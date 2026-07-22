@@ -98,10 +98,11 @@ above the harness supplies task files and checks results.
   happened and what each task cost.
 - **Exit codes**: `0` finished, `1` error, `2` hit the tool-call cap,
   `3` stopped by the context guard.
-- **No stdin, ever**: dangerous commands are auto-denied even with `--yolo`,
-  and without `--yolo` every bash/write is denied — a batch can never stall
-  overnight on a hidden `[y/N]` prompt. In practice `--task` always pairs
-  with `--yolo`.
+- **No stdin, ever**: commands matching the dangerous-pattern list are
+  auto-denied even with `--yolo`, and without `--yolo` every bash/write is
+  denied — a batch can never stall overnight on a hidden `[y/N]` prompt. In
+  practice `--task` always pairs with `--yolo`; read the caveat under
+  [Safety rails](#safety-rails) before leaving one unattended.
 
 A task file template lives in [`templates/TASK.md`](templates/TASK.md):
 rigid structure with grounding (a verified pattern the model must imitate),
@@ -128,9 +129,12 @@ the model never mistakes a partial result for a complete one.
 
 - writes (`write_file`, `edit_file`) only inside `AGENT_ROOT`; symlinks are
   resolved via `realpath`
-- dangerous commands (`sudo`, `rm -rf`, `dd`, `mkfs`, writes to `/dev/`, …)
-  require confirmation even in `--yolo` mode; in task mode they are denied
-  outright
+- a dangerous-pattern list (`sudo`, `rm -rf`, `dd`, `mkfs`, writes to
+  `/dev/`, …) requires confirmation even in `--yolo` mode, and in task mode
+  denies outright. Treat it as a guard against the model's slips, not as a
+  boundary: it is a regex over the command string, and near-synonyms walk
+  straight past it — `rm --recursive --force`, `find … -delete`,
+  `git clean -fdx`, `python3 -c "shutil.rmtree(…)"` are all allowed
 - two tool-turn budgets per user input: work turns (bash/write/edit, default
   25 via `AGENT_MAX_STEPS`) and read-only turns (read/list/grep/fetch, default
   2× that via `AGENT_MAX_READS`) — exploration can't eat the work budget,
@@ -138,10 +142,12 @@ the model never mistakes a partial result for a complete one.
 - context-overflow guard: the server reports used tokens per request, and at
   ~85 % of `AGENT_CTX` the loop stops with a clear message instead of letting
   ollama silently drop the system prompt and tools
-- caveat: `run_bash` is inherently unrestricted (apart from confirmation) —
-  the write jail protects against the model's *mistakes*, not against
-  unsupervised runs; for real autonomous use run it under a separate user or
-  in a container
+- caveat: `run_bash` and `read_file` are unrestricted (apart from
+  confirmation) — the write jail protects against the model's *mistakes*,
+  not against unsupervised runs. Anything your user can read, the model can
+  read and ship out through the same shell, and text arriving via `web_fetch`
+  reaches the model with that shell still attached. For real autonomous use
+  run it under a separate user or in a container.
 
 ## Modelfiles
 
