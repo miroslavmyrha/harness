@@ -182,7 +182,6 @@ def commit_attempt(project, label):
 # ------------------------------------------------------------------ fix task
 
 FIX_TEMPLATE = """---
-validate: {validate}
 retry: 0
 ---
 
@@ -190,19 +189,18 @@ retry: 0
 
 ## Symptom
 
-After the previous task, the validation command - run outside your session -
-failed:
+An acceptance check ran outside your session, against the running app, and
+failed. Its output:
 
 ```
-$ {cmd}
 {output}
 ```
 
 ## What to do
 
-The cause is in the code you just wrote, not in the validation command and
-not in the environment. Find it, fix it with the **smallest possible
-change**, and rewrite nothing else.
+The cause is in the code you just wrote, not in the check and not in the
+environment. Read the failing lines above as the symptom, find the cause,
+fix it with the **smallest possible change**, and rewrite nothing else.
 
 - Change files **through `edit_file` only**. Do not use `write_file` on an
   existing file here - during fixes, rewriting a whole file has repeatedly
@@ -223,12 +221,13 @@ missing, do not improvise a replacement: write a single line starting with
 """
 
 
-def write_fix_task(task_path, attempt, meta, cmd, output, original):
+def write_fix_task(task_path, attempt, output, original):
+    # Neither the validate command nor its path is written into the fix task:
+    # when validation is a script, the command *is* the path to the test the
+    # model must not read. Only the failing output - the symptom - goes in.
     path = f"{task_path}.fix{attempt}.md"
     with open(path, "w") as f:
-        f.write(FIX_TEMPLATE.format(
-            validate=meta.get("validate", ""), cmd=cmd,
-            output=output[-3000:], original=original))
+        f.write(FIX_TEMPLATE.format(output=output[-3000:], original=original))
     return path
 
 
@@ -310,7 +309,7 @@ def run_one(task_path, args, log):
         verdict = "FAIL"
         if attempt >= retries:
             break
-        current = write_fix_task(task_path, attempt + 1, meta, cmd, out, original)
+        current = write_fix_task(task_path, attempt + 1, out, original)
         say(f"  retrying with fix task {os.path.basename(current)}", "yellow")
 
     record["verdict"] = verdict

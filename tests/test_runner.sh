@@ -45,6 +45,9 @@ setup 1; STUB_BEHAVIOUR=fix     run fix;      check "fix loop recovers" PASS
 grep -q "fix the failing check" "$TASKS"/task.md.fix1.md \
     && echo "PASS  fix task written from template" \
     || { echo "FAIL  fix task missing"; fails=$((fails + 1)); }
+grep -qE "validate:|answer.txt" "$TASKS"/task.md.fix1.md \
+    && { echo "FAIL  fix task leaks the validate command"; fails=$((fails + 1)); } \
+    || echo "PASS  fix task carries the symptom, not the validate command"
 # 4. model claims success, writes nothing
 setup 0; STUB_BEHAVIOUR=nothing run nothing;  check "empty diff caught" "NO CHANGES"
 # 5. agent hits the step cap -> still validated, still fails
