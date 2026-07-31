@@ -10,6 +10,7 @@ the harness's own exit codes. Behaviours:
   fix       - write a failing file, then a passing one on the fix task
   nothing   - claim success, touch no file
   lazy      - write nothing first, do the work when told the diff was empty
+  lazyfix   - broken code, then nothing on the fix, then correct on the empty task
   capped    - write a failing file and exit 2 (hit the step cap)
 """
 import json, os, sys, time
@@ -30,6 +31,12 @@ with open(f"{task}.{time.strftime('%Y%m%d-%H%M%S')}.jsonl", "w") as log:
     log.write(json.dumps({"event": "end", "status": "done"}) + "\n")
 
 is_empty = ".empty" in os.path.basename(task)
+if behaviour == "lazyfix":
+    if is_empty:
+        open(target, "w").write("42\n"); sys.exit(0)
+    if is_fix:
+        sys.exit(0)                      # opravny pokus nezapise nic
+    open(target, "w").write("nonsense\n"); sys.exit(0)
 if behaviour == "nothing" or (behaviour == "lazy" and not is_empty):
     sys.exit(0)
 if behaviour == "ok" or (behaviour == "fix" and is_fix) or (behaviour == "lazy" and is_empty):

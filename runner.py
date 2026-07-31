@@ -51,7 +51,7 @@ def parse_task(path):
                 continue
             k, v = line.split(":", 1)
             meta[k.strip()] = v.strip()
-    known = {"validate", "retry", "timeout", "steps", "reads"}
+    known = {"validate", "retry", "timeout", "steps", "reads", "empty_retry"}
     for k in set(meta) - known:
         say(f"  unknown front-matter key ignored: {k}", "yellow")
     return meta, body.strip()
@@ -324,12 +324,21 @@ def run_one(task_path, args, log):
               "attempts": [], "tokens": 0, "secs": 0}
     verdict, current, original = "?", task_path, body
 
-    for attempt in range(retries + 2):        # initial run + one per retry
+    # Two separate budgets. `retry` pays for attempts that produced code the
+    # check rejected; `empty_retry` pays for attempts that produced nothing at
+    # all. Measured over benchmarks 8-11: 8 of 19 empty diffs happened on the
+    # *fix* attempt, where the retry budget was already spent - so charging an
+    # empty diff to `retry` means the most common failure gets the fewest
+    # chances. An empty diff is not a failed attempt, it is no attempt.
+    empty_budget = intval(meta, "empty_retry", 1)
+    attempt, empty_used = 0, 0
+    while True:
         # --fix-model lets a different (usually stronger) model do the repairs:
         # writing code and diagnosing someone else's failure are not the same
         # skill, and a cheap model that writes well may still not fix well.
         # attempt 0 is always the author; every later attempt is the fixer.
-        model = args.model if attempt == 0 else (args.fix_model or args.model)
+        prvni = attempt == 0 and empty_used == 0
+        model = args.model if prvni else (args.fix_model or args.model)
         code, transcript, tokens, secs = run_agent(
             current, project, {}, model, args.playbook, steps, reads)  # current: task path
         record["tokens"] += tokens
@@ -351,11 +360,13 @@ def run_one(task_path, args, log):
             att["verdict"] = verdict = "NO CHANGES"
             say("  the agent changed nothing - its answer is not evidence.", "red")
             record["attempts"].append(att)
-            if attempt >= retries:
+            if empty_used >= empty_budget:
                 break
-            current = write_empty_task(task_path, attempt + 1, original)
-            say(f"  retrying with {os.path.basename(current)} (empty diff is a "
-                f"failure like any other)", "yellow")
+            empty_used += 1
+            current = write_empty_task(task_path, empty_used, original)
+            say(f"  retrying with {os.path.basename(current)} "
+                f"(empty diff {empty_used}/{empty_budget}, retry budget untouched)",
+                "yellow")
             continue
         if not cmd:
             att["verdict"] = verdict = "UNVERIFIED"
@@ -374,7 +385,8 @@ def run_one(task_path, args, log):
         verdict = "FAIL"
         if attempt >= retries:
             break
-        current = write_fix_task(task_path, attempt + 1, out, original)
+        attempt += 1
+        current = write_fix_task(task_path, attempt, out, original)
         say(f"  retrying with fix task {os.path.basename(current)}", "yellow")
 
     record["verdict"] = verdict
