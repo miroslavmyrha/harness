@@ -9,6 +9,7 @@ the harness's own exit codes. Behaviours:
   broken    - write a failing file
   fix       - write a failing file, then a passing one on the fix task
   nothing   - claim success, touch no file
+  lazy      - write nothing first, do the work when told the diff was empty
   capped    - write a failing file and exit 2 (hit the step cap)
 """
 import json, os, sys, time
@@ -28,9 +29,10 @@ with open(f"{task}.{time.strftime('%Y%m%d-%H%M%S')}.jsonl", "w") as log:
                           "usage": {"prompt_tokens": 1000, "completion_tokens": 50}}) + "\n")
     log.write(json.dumps({"event": "end", "status": "done"}) + "\n")
 
-if behaviour == "nothing":
+is_empty = ".empty" in os.path.basename(task)
+if behaviour == "nothing" or (behaviour == "lazy" and not is_empty):
     sys.exit(0)
-if behaviour == "ok" or (behaviour == "fix" and is_fix):
+if behaviour == "ok" or (behaviour == "fix" and is_fix) or (behaviour == "lazy" and is_empty):
     open(target, "w").write("42\n")
     sys.exit(0)
 with open(target, "w") as f:                       # broken / fix-first / capped

@@ -50,6 +50,14 @@ grep -qE "validate:|answer.txt" "$TASKS"/task.md.fix1.md \
     || echo "PASS  fix task carries the symptom, not the validate command"
 # 4. model claims success, writes nothing
 setup 0; STUB_BEHAVIOUR=nothing run nothing;  check "empty diff caught" "NO CHANGES"
+# 4b. empty diff is retried, not the end of the run (retry budget permitting)
+setup 1; STUB_BEHAVIOUR=lazy run lazy; check "empty diff retried -> PASS" PASS
+grep -q "produced no files" "$TASKS"/task.md.empty1.md \
+    && echo "PASS  empty-diff task written from its own template" \
+    || { echo "FAIL  empty-diff task missing"; fails=$((fails + 1)); }
+grep -q "the code you just wrote" "$TASKS"/task.md.empty1.md \
+    && { echo "FAIL  empty-diff task uses the fix template"; fails=$((fails + 1)); } \
+    || echo "PASS  empty-diff task does not point at code that was never written"
 # 5. agent hits the step cap -> still validated, still fails
 setup 0; STUB_BEHAVIOUR=capped  run capped;   check "step cap" FAIL
 grep -q "hit step cap" "$LOG" && echo "PASS  agent status recorded" \

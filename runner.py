@@ -181,6 +181,44 @@ def commit_attempt(project, label):
 
 # ------------------------------------------------------------------ fix task
 
+EMPTY_TEMPLATE = """---
+retry: 0
+---
+
+# Task: your previous run produced no files
+
+## Symptom
+
+The previous attempt at the task below ended without creating or changing a
+single file. Nothing was written, so nothing was verified: whatever the run
+concluded, the work does not exist.
+
+This is not a disagreement about quality - the diff was empty.
+
+## What to do
+
+Do the task now, and *write* it.
+
+- Check the current state first (`list_dir`, `read_file`) instead of assuming
+  either that the work is done or that it is missing.
+- If a file you expected is genuinely already there and correct, the remaining
+  work is whatever is still missing - find it and write that.
+- Write with **relative paths**; your working directory already is the project
+  root. A rejected absolute path is not a reason to stop.
+- Producing files is the deliverable. An explanation of what should be written
+  is not a substitute for writing it.
+
+## Escape hatch
+
+If the task cannot be done as written, say so in a single line starting with
+`ASSUMPTION FAILED:` - but only after you have actually looked at the project.
+
+## Original task
+
+{original}
+"""
+
+
 FIX_TEMPLATE = """---
 retry: 0
 ---
@@ -219,6 +257,17 @@ missing, do not improvise a replacement: write a single line starting with
 
 {original}
 """
+
+
+def write_empty_task(task_path, attempt, original):
+    """Prompt for the 'agent wrote nothing' case. A different failure from a
+    failing check: there is no symptom to read, so handing over the fix
+    template ('the cause is in the code you just wrote') would point the
+    model at code that does not exist."""
+    path = f"{task_path}.empty{attempt}.md"
+    with open(path, "w") as f:
+        f.write(EMPTY_TEMPLATE.format(original=original))
+    return path
 
 
 def write_fix_task(task_path, attempt, output, original):
@@ -293,11 +342,21 @@ def run_one(task_path, args, log):
             "dim")
 
         if sha is None:
+            # An empty diff used to end the run. Measured across benchmarks 8-11
+            # it is one of the most common failures (t2, t16, e5, e8 ...), and
+            # it is also the one a retry helps most with - the next attempt
+            # starts from the real project state instead of the model's belief
+            # about it. With --fix-model it escalates to the stronger model,
+            # which is what a human would do too.
             att["verdict"] = verdict = "NO CHANGES"
-            say("  FAIL: the agent changed nothing - its answer is not evidence.",
-                "red")
+            say("  the agent changed nothing - its answer is not evidence.", "red")
             record["attempts"].append(att)
-            break
+            if attempt >= retries:
+                break
+            current = write_empty_task(task_path, attempt + 1, original)
+            say(f"  retrying with {os.path.basename(current)} (empty diff is a "
+                f"failure like any other)", "yellow")
+            continue
         if not cmd:
             att["verdict"] = verdict = "UNVERIFIED"
             record["attempts"].append(att)
