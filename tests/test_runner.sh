@@ -63,6 +63,14 @@ setup 1; STUB_BEHAVIOUR=lazyfix run lazyfix; check "empty diff on the fix attemp
 # 4d. rozpocet na prazdne diffy je vycerpatelny -> porad konci jako NO CHANGES
 setup 1; printf -- '---\nvalidate: test "$(cat answer.txt)" = "42"\nretry: 1\nempty_retry: 0\n---\n# Task: write the answer\n' > "$TASKS/task.md"
 STUB_BEHAVIOUR=nothing run noempty; check "empty_retry: 0 keeps the old behaviour" "NO CHANGES"
+# 4e. validace nesmi po sobe nechat prazdne stuby (bind-mount v dockeru je dela)
+setup 0
+printf -- '---\nvalidate: touch src/x.test.js; test "$(cat answer.txt)" = "42"\nretry: 0\n---\n# Task: write the answer\n' > "$TASKS/task.md"
+mkdir -p "$WORK/src"
+STUB_BEHAVIOUR=ok run stub; check "validate cleanup keeps the task green" PASS
+[ -e "$WORK/src/x.test.js" ] \
+    && { echo "FAIL  empty stub left in the project after validate"; fails=$((fails + 1)); } \
+    || echo "PASS  empty file left by validate is cleaned up"
 # 5. agent hits the step cap -> still validated, still fails
 setup 0; STUB_BEHAVIOUR=capped  run capped;   check "step cap" FAIL
 grep -q "hit step cap" "$LOG" && echo "PASS  agent status recorded" \

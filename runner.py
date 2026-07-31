@@ -156,14 +156,50 @@ def tokens_of(transcript):
 AGENT_STATUS = {0: "done", 1: "error", 2: "hit step cap", 3: "context guard"}
 
 
+def soubory(project):
+    """Every file in the project except .git - for spotting what validation
+    left behind."""
+    out = set()
+    for base, dirs, files in os.walk(project):
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules")]
+        for f in files:
+            out.add(os.path.join(base, f))
+    return out
+
+
+def uklid_po_validaci(project, pred):
+    """Delete empty files that validation created.
+
+    A `docker run -v host/x.test.js:project/src/x.test.js` bind mount leaves a
+    zero-byte root-owned stub behind when the container exits. The model then
+    lists src/, sees the test files it was told do not exist, reads them, gets
+    "the file only has 0 lines" and burns the whole budget on it - measured as
+    four empty-diff tasks in a single chain run. Validation must leave the
+    project exactly as it found it."""
+    smazano = []
+    for f in soubory(project) - pred:
+        try:
+            if os.path.getsize(f) == 0:
+                os.remove(f)
+                smazano.append(os.path.relpath(f, project))
+        except OSError:
+            pass                      # not ours to delete: leave it, say nothing
+    if smazano:
+        say(f"  cleaned up {len(smazano)} empty file(s) left by validation: "
+            f"{', '.join(sorted(smazano)[:4])}", "dim")
+
+
 def validate(cmd, project, timeout):
     """Run the validate command here, in the runner, never in the model's
     session. Returns (ok, combined_output)."""
+    pred = soubory(project)
     try:
         r = subprocess.run(cmd, shell=True, cwd=project, capture_output=True,
                            text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        uklid_po_validaci(project, pred)
         return False, f"validate command exceeded {timeout}s and was killed"
+    uklid_po_validaci(project, pred)
     out = (r.stdout + r.stderr).strip()
     return r.returncode == 0, out or f"(no output, exit code {r.returncode})"
 
