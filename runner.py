@@ -271,17 +271,23 @@ def run_one(task_path, args, log):
     record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "task": task_path,
               "project": project, "branch": branch, "baseline": baseline[:7],
               "playbook": args.playbook or "(built-in)", "validate": cmd,
+              "model": args.model, "fix_model": args.fix_model or args.model,
               "attempts": [], "tokens": 0, "secs": 0}
     verdict, current, original = "?", task_path, body
 
     for attempt in range(retries + 2):        # initial run + one per retry
+        # --fix-model lets a different (usually stronger) model do the repairs:
+        # writing code and diagnosing someone else's failure are not the same
+        # skill, and a cheap model that writes well may still not fix well.
+        # attempt 0 is always the author; every later attempt is the fixer.
+        model = args.model if attempt == 0 else (args.fix_model or args.model)
         code, transcript, tokens, secs = run_agent(
-            current, project, {}, args.model, args.playbook, steps, reads)  # current: task path
+            current, project, {}, model, args.playbook, steps, reads)  # current: task path
         record["tokens"] += tokens
         record["secs"] += secs
         status = AGENT_STATUS.get(code, f"exit {code}")
         sha = commit_attempt(project, f"{os.path.basename(current)} (attempt {attempt})")
-        att = {"task": os.path.basename(current), "agent": status,
+        att = {"task": os.path.basename(current), "agent": status, "model": model,
                "commit": sha, "tokens": tokens, "secs": secs}
         say(f"  agent: {status}, {tokens:,} tokens, {secs}s, commit {sha or '-'}",
             "dim")
@@ -333,6 +339,7 @@ def main():
     p.add_argument("--project", default=".", help="target repo (AGENT_ROOT)")
     p.add_argument("--playbook", help="AGENT_SYSTEM: a name from ~/agent-playbooks/build or a path")
     p.add_argument("--model", help="AGENT_MODEL override")
+    p.add_argument("--fix-model", help="model for fix attempts (default: --model)")
     p.add_argument("--steps", type=int, default=25, help="default AGENT_MAX_STEPS")
     p.add_argument("--log", default=os.path.join(HERE, "runs.jsonl"))
     p.add_argument("--allow-dirty", action="store_true", help="run even with uncommitted changes")
