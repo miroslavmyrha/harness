@@ -86,7 +86,7 @@ grep -q "uncommitted changes" "$TASKS/out.dirty" && echo "PASS  dirty tree refus
 # 8. baseline commit is never touched
 setup 0; before=$(git -C "$WORK" rev-parse HEAD)
 STUB_BEHAVIOUR=broken run isolation
-after=$(git -C "$WORK" rev-parse master 2>/dev/null || git -C "$WORK" rev-parse main)
+after=$(git -C "$WORK" rev-parse -q --verify master || git -C "$WORK" rev-parse -q --verify main)
 [ "$before" = "$after" ] && echo "PASS  base branch untouched" \
     || { echo "FAIL  base branch moved"; fails=$((fails + 1)); }
 # 9b. --allow-dirty must not attribute your WIP to the agent
